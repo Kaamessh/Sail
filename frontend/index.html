@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Maritime Freight Intelligence & Chartering Decision System</title>
+  
+  <!-- Fonts & Icons -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  
+  <!-- Chart.js -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  
+  <!-- Custom Styles -->
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+  <!-- Top Navigation Bar -->
+  <header class="top-navbar">
+    <div class="brand-wrapper">
+      <div class="brand-icon">
+        <i class="fa-solid fa-ship"></i>
+      </div>
+      <div>
+        <div class="brand-title">AURA MARITIME</div>
+        <div class="brand-subtitle">Freight Intelligence & Prescriptive Chartering System</div>
+      </div>
+    </div>
+    
+    <div class="header-status">
+      <div class="status-badge" id="system-status-badge">
+        <span class="status-pulse"></span>
+        <span id="system-status-text">ML Models Online (7D, 14D, 30D)</span>
+      </div>
+      <button class="btn-sm-sync" id="btn-refresh-market" title="Sync Latest Market Data">
+        <i class="fa-solid fa-rotate"></i> Sync Market
+      </button>
+    </div>
+  </header>
+
+  <!-- Main Dashboard Container -->
+  <main class="dashboard-container">
+
+    <!-- 1. Executive Summary KPI Cards -->
+    <section class="kpi-grid">
+      <!-- BDI Spot Card -->
+      <div class="glass-card kpi-card bdi-card">
+        <div class="kpi-header">
+          <span class="kpi-label">Baltic Dry Index (BDI)</span>
+          <span class="kpi-badge up" id="kpi-bdi-badge">+1.8% 7D</span>
+        </div>
+        <div class="kpi-value-row">
+          <span class="kpi-value" id="kpi-bdi-val">1,850</span>
+          <span class="kpi-unit">pts</span>
+        </div>
+        <div class="kpi-footer">
+          <span>7D MA: <strong id="kpi-bdi-7dma">1,842</strong></span>
+          <span>30D Vol: <strong id="kpi-bdi-vol">28.5</strong></span>
+        </div>
+      </div>
+
+      <!-- Bunker Fuel & Hi5 Card -->
+      <div class="glass-card kpi-card bunker-card">
+        <div class="kpi-header">
+          <span class="kpi-label">VLSFO Bunker Spot</span>
+          <span class="kpi-badge neutral" id="kpi-hi5-badge">Hi5: $155/MT</span>
+        </div>
+        <div class="kpi-value-row">
+          <span class="kpi-value" id="kpi-vlsfo-val">$585.00</span>
+          <span class="kpi-unit">/ MT</span>
+        </div>
+        <div class="kpi-footer">
+          <span>MGO: <strong id="kpi-mgo-val">$760.00</strong></span>
+          <span>IFO380: <strong id="kpi-ifo-val">$430.00</strong></span>
+        </div>
+      </div>
+
+      <!-- ML 30-Day Forecast Snapshot -->
+      <div class="glass-card kpi-card forecast-card">
+        <div class="kpi-header">
+          <span class="kpi-label">30D Forecast (P50 Expected)</span>
+          <span class="kpi-badge up" id="kpi-sentiment-badge">Neutral</span>
+        </div>
+        <div class="kpi-value-row">
+          <span class="kpi-value" id="kpi-forecast-p50">1,760</span>
+          <span class="kpi-unit">pts</span>
+        </div>
+        <div class="kpi-footer">
+          <span>P10 (Low): <strong id="kpi-forecast-p10">1,480</strong></span>
+          <span>P90 (High): <strong id="kpi-forecast-p90">2,180</strong></span>
+        </div>
+      </div>
+
+      <!-- Chartering Fleet Indicator -->
+      <div class="glass-card kpi-card status-card">
+        <div class="kpi-header">
+          <span class="kpi-label">Optimal Vessel Benchmark</span>
+          <span class="kpi-badge up" id="kpi-vessel-badge">Feasible</span>
+        </div>
+        <div class="kpi-value-row">
+          <span class="kpi-value" id="kpi-benchmark-cost">$15.36</span>
+          <span class="kpi-unit">/ Tonne</span>
+        </div>
+        <div class="kpi-footer">
+          <span>Active Route: <strong id="kpi-active-route">Port Hedland → Dhamra</strong></span>
+        </div>
+      </div>
+    </section>
+
+    <!-- 2. Main Grid: Forecast Cone Chart & Prescriptive Chartering Calculator -->
+    <div class="main-grid">
+      
+      <!-- Left Column: Forecast Cone Visualizer -->
+      <section class="glass-card">
+        <div class="section-header">
+          <div class="section-title">
+            <i class="fa-solid fa-chart-line"></i>
+            Baltic Dry Index Multi-Horizon Forecast Cone
+          </div>
+          <div class="tab-group" id="horizon-tabs">
+            <button class="tab-btn active" data-horizon="all">All Horizons</button>
+            <button class="tab-btn" data-horizon="7">7-Day</button>
+            <button class="tab-btn" data-horizon="14">14-Day</button>
+            <button class="tab-btn" data-horizon="30">30-Day</button>
+          </div>
+        </div>
+
+        <!-- Chart Container -->
+        <div class="chart-wrapper">
+          <canvas id="forecastChart"></canvas>
+        </div>
+
+        <!-- Quantile Horizon Stats Strip -->
+        <div class="forecast-stats-strip">
+          <div class="f-stat-box">
+            <div class="f-stat-label">P10 Downside Floor</div>
+            <div class="f-stat-val p10" id="strip-p10">1,480 pts</div>
+            <div style="font-size: 0.68rem; color: var(--text-muted); margin-top: 2px;">90% Probability Exceeds</div>
+          </div>
+          <div class="f-stat-box">
+            <div class="f-stat-label">P50 Expected Mean</div>
+            <div class="f-stat-val p50" id="strip-p50">1,760 pts</div>
+            <div style="font-size: 0.68rem; color: var(--text-muted); margin-top: 2px;">Central Market Vector</div>
+          </div>
+          <div class="f-stat-box">
+            <div class="f-stat-label">P90 Bullish Ceiling</div>
+            <div class="f-stat-val p90" id="strip-p90">2,180 pts</div>
+            <div style="font-size: 0.68rem; color: var(--text-muted); margin-top: 2px;">High Risk / Rally Boundary</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Right Column: Prescriptive Chartering Calculator -->
+      <section class="glass-card">
+        <div class="section-header">
+          <div class="section-title">
+            <i class="fa-solid fa-calculator"></i>
+            Prescriptive Chartering Calculator
+          </div>
+        </div>
+
+        <form id="charter-form" class="form-grid">
+          <!-- Cargo Volume -->
+          <div class="form-group">
+            <label class="form-label" for="input-cargo">Cargo Volume (Tonnes)</label>
+            <input type="number" id="input-cargo" class="form-control" value="80000" min="5000" max="350000" step="5000" required>
+          </div>
+
+          <!-- Charter Mode -->
+          <div class="form-group">
+            <label class="form-label" for="select-mode">Charter Type</label>
+            <select id="select-mode" class="form-control">
+              <option value="TimeCharter" selected>Time Charter (TCE + Bunkers)</option>
+              <option value="Spot">Spot Voyage Rate ($/Tonne)</option>
+            </select>
+          </div>
+
+          <!-- Origin Port -->
+          <div class="form-group">
+            <label class="form-label" for="select-origin">Load Port (Origin)</label>
+            <select id="select-origin" class="form-control">
+              <option value="Port Hedland" selected>Port Hedland (Draft: 19.5m)</option>
+              <option value="Tubarao">Tubarao (Draft: 22.5m)</option>
+              <option value="Newcastle">Newcastle (Draft: 15.2m)</option>
+              <option value="Richards Bay">Richards Bay (Draft: 17.5m)</option>
+              <option value="Santos">Santos (Draft: 13.8m)</option>
+              <option value="Singapore">Singapore (Draft: 16.5m)</option>
+            </select>
+          </div>
+
+          <!-- Destination Port -->
+          <div class="form-group">
+            <label class="form-label" for="select-destination">Discharge Port (Destination)</label>
+            <select id="select-destination" class="form-control">
+              <option value="Dhamra" selected>Dhamra (Draft: 18.0m)</option>
+              <option value="Paradip">Paradip (Draft: 14.5m)</option>
+              <option value="Haldia">Haldia (Draft: 8.5m - Restricted)</option>
+              <option value="Qingdao">Qingdao (Draft: 21.0m)</option>
+              <option value="Rotterdam">Rotterdam (Draft: 21.5m)</option>
+            </select>
+          </div>
+
+          <!-- Max Permissible Draft Override -->
+          <div class="form-group">
+            <label class="form-label" for="input-draft">Max Permissible Draft (m)</label>
+            <input type="number" id="input-draft" class="form-control" placeholder="Auto (From Port)" min="6.0" max="25.0" step="0.1">
+          </div>
+
+          <!-- Laycan Date -->
+          <div class="form-group">
+            <label class="form-label" for="input-laycan">Laycan Window</label>
+            <input type="date" id="input-laycan" class="form-control" value="2026-09-15">
+          </div>
+
+          <!-- Submit Button -->
+          <div class="form-group full-width">
+            <button type="submit" class="btn-primary" id="btn-optimize">
+              <i class="fa-solid fa-wand-magic-sparkles"></i> Evaluate Optimal Fleet Allocation
+            </button>
+          </div>
+        </form>
+
+        <!-- Recommendation Banner -->
+        <div class="recommendation-banner" id="recommendation-banner">
+          <div>
+            <div class="rec-title">Optimal Recommendation</div>
+            <div class="rec-vessel" id="rec-vessel-name">PANAMAX (75k DWT)</div>
+            <div style="font-size: 0.75rem; color: var(--text-secondary); margin-top: 3px;" id="rec-summary-text">
+              Fully compliant with load/discharge drafts. 1 voyage needed.
+            </div>
+          </div>
+          <div>
+            <div class="rec-cost" id="rec-cost-val">$15.36</div>
+            <div class="rec-cost-sub">Landed $/Tonne</div>
+          </div>
+        </div>
+      </section>
+
+    </div>
+
+    <!-- 3. Vessel Class Comparison Table -->
+    <section class="glass-card">
+      <div class="section-header">
+        <div class="section-title">
+          <i class="fa-solid fa-table-columns"></i>
+          Fleet Class Economic & Operational Matrix
+        </div>
+        <button class="btn-sm-sync" id="btn-save-scenario">
+          <i class="fa-solid fa-bookmark"></i> Save Current Scenario
+        </button>
+      </div>
+
+      <div class="vessel-table-wrapper">
+        <table class="custom-table" id="vessel-matrix-table">
+          <thead>
+            <tr>
+              <th>Vessel Class</th>
+              <th>DWT / Capacity</th>
+              <th>Laden Draft</th>
+              <th>Draft Status</th>
+              <th>Voyages</th>
+              <th>Duration (Days)</th>
+              <th>VLSFO Fuel (MT)</th>
+              <th>Fuel Cost ($)</th>
+              <th>Charter Hire ($)</th>
+              <th>Total Cost ($)</th>
+              <th>Landed $/Tonne</th>
+              <th>CO2 (MT)</th>
+            </tr>
+          </thead>
+          <tbody id="vessel-matrix-body">
+            <!-- Dynamically injected -->
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- 4. Stress-Testing Sandbox -->
+    <section class="glass-card sandbox-card">
+      <div class="section-header">
+        <div class="section-title">
+          <i class="fa-solid fa-sliders"></i>
+          Market Volatility & Bunker Spike Stress-Testing Sandbox
+        </div>
+      </div>
+
+      <div class="form-grid">
+        <!-- Bunker Price Slider -->
+        <div class="slider-container">
+          <div class="slider-header">
+            <span>Bunker Fuel Price Spike</span>
+            <span class="slider-val" id="slider-bunker-val">+0% ($585/MT)</span>
+          </div>
+          <input type="range" id="slider-bunker" min="-20" max="60" value="0" step="5">
+        </div>
+
+        <!-- BDI Index Shift Slider -->
+        <div class="slider-container">
+          <div class="slider-header">
+            <span>BDI Freight Rate Shift</span>
+            <span class="slider-val" id="slider-bdi-val">+0% (1,850 pts)</span>
+          </div>
+          <input type="range" id="slider-bdi" min="-30" max="60" value="0" step="5">
+        </div>
+      </div>
+
+      <!-- Real-time Stress Impact Cards -->
+      <div class="stress-result-cards">
+        <div class="stress-card">
+          <div class="stress-vessel-title" style="color: var(--accent-cyan);">Capesize (180k DWT)</div>
+          <div class="stress-pmt-val" id="stress-cape-val">$26.75</div>
+          <div class="stress-delta" id="stress-cape-delta">+0.0% vs Base</div>
+        </div>
+        <div class="stress-card">
+          <div class="stress-vessel-title" style="color: var(--accent-blue);">Panamax (75k DWT)</div>
+          <div class="stress-pmt-val" id="stress-pana-val">$15.36</div>
+          <div class="stress-delta" id="stress-pana-delta">+0.0% vs Base</div>
+        </div>
+        <div class="stress-card">
+          <div class="stress-vessel-title" style="color: var(--accent-amber);">Supramax (58k DWT)</div>
+          <div class="stress-pmt-val" id="stress-supra-val">$19.58</div>
+          <div class="stress-delta" id="stress-supra-delta">+0.0% vs Base</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 5. Saved Scenarios Ledger -->
+    <section class="glass-card">
+      <div class="section-header">
+        <div class="section-title">
+          <i class="fa-solid fa-clock-rotate-left"></i>
+          Historical Decision Ledger & Saved Scenarios
+        </div>
+      </div>
+
+      <div class="scenario-grid" id="scenario-grid-container">
+        <!-- Dynamically injected -->
+      </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="dashboard-footer">
+      <div>
+        Aura Maritime Freight Intelligence System &copy; 2026. Powered by Multi-Horizon Quantile Regressors & MILP Prescriptive Solver.
+      </div>
+      <div class="footer-links">
+        <a href="/api/health" target="_blank"><i class="fa-solid fa-heart-pulse"></i> API Health</a>
+        <a href="/docs" target="_blank"><i class="fa-solid fa-book"></i> API Documentation</a>
+      </div>
+    </footer>
+
+  </main>
+
+  <!-- Dashboard JavaScript -->
+  <script src="app.js"></script>
+</body>
+</html>
