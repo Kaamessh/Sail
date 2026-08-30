@@ -1,6 +1,7 @@
 """
 Database & Persistence layer supporting Supabase (PostgreSQL)
-with fallback in-memory / JSON storage for resilient offline & serverless operation.
+with resilient local CSV feature store fallback for reliable offline,
+hybrid, and Vercel serverless operation.
 """
 
 import json
@@ -8,13 +9,17 @@ import logging
 import os
 import uuid
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+import pandas as pd
 from dotenv import load_dotenv
 
 # Load local .env file
 load_dotenv()
 
 logger = logging.getLogger("maritime.database")
+
 
 def get_clean_supabase_url() -> str:
     url = os.getenv("SUPABASE_URL", "").strip()
@@ -26,6 +31,7 @@ def get_clean_supabase_url() -> str:
         url = url[:-1]
     return url
 
+
 SUPABASE_URL = get_clean_supabase_url()
 SUPABASE_KEY = (
     os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
@@ -34,15 +40,58 @@ SUPABASE_KEY = (
 )
 
 
+def load_local_feature_store(filepath: Optional[str] = None) -> List[Dict[str, Any]]:
+    """
+    Use Pandas to read the local maritime feature store CSV file.
+    Searches across dataset/maritime_feature_store.csv and returns
+    a list of clean Python dictionaries.
+    """
+    candidate_paths = []
+    if filepath:
+        candidate_paths.append(Path(filepath).resolve())
+
+    base_dir = Path.cwd().resolve()
+    backend_dir = Path(__file__).resolve().parent
+    root_dir = backend_dir.parent
+
+    candidate_paths.extend([
+        base_dir / "dataset" / "maritime_feature_store.csv",
+        root_dir / "dataset" / "maritime_feature_store.csv",
+        backend_dir.parent / "dataset" / "maritime_feature_store.csv",
+    ])
+
+    for path in candidate_paths:
+        if path.exists():
+            try:
+                df = pd.read_csv(path)
+                # Fill NAs and format records
+                df = df.where(pd.notnull(df), None)
+                records = df.to_dict(orient="records")
+                # Ensure float types on numeric columns
+                for rec in records:
+                    for k, v in rec.items():
+                        if k not in ["id", "date"] and v is not None:
+                            try:
+                                rec[k] = float(v)
+                            except (ValueError, TypeError):
+                                pass
+                logger.info(f"Loaded {len(records)} records from local CSV: {path}")
+                return records
+            except Exception as err:
+                logger.error(f"Error reading local CSV feature store at {path}: {err}")
+
+    logger.warning("Local CSV feature store not found, generating in-memory baseline.")
+    return generate_seed_market_history()
+
+
 def generate_seed_market_history() -> List[Dict[str, Any]]:
     """
-    Generate realistic 60-day historical time-series of Baltic Dry Index (BDI),
+    Generate realistic historical time-series of Baltic Dry Index (BDI),
     Bunker Fuel prices (VLSFO, MGO, IFO380), and Hi5 Spread.
     """
     history: List[Dict[str, Any]] = []
     base_date = datetime(2026, 8, 30)
 
-    # Base market levels
     bdi_curve = [
         1680, 1695, 1710, 1705, 1720, 1735, 1750, 1740, 1765, 1780,
         1790, 1775, 1760, 1770, 1795, 1810, 1830, 1845, 1835, 1820,
@@ -69,15 +118,12 @@ def generate_seed_market_history() -> List[Dict[str, Any]]:
         mgo_val = round(mgo_base + ((i % 9) - 4) * 4.0, 2)
         hi5_val = round(vlsfo_val - ifo_val, 2)
 
-        # 7D MA calculation
         slice_7d = bdi_curve[max(0, i - 6) : i + 1]
         ma_7d = round(sum(slice_7d) / len(slice_7d), 2)
 
-        # 14D MA calculation
         slice_14d = bdi_curve[max(0, i - 13) : i + 1]
         ma_14d = round(sum(slice_14d) / len(slice_14d), 2)
 
-        # 30D Volatility calculation
         slice_30d = bdi_curve[max(0, i - 29) : i + 1]
         mean_30 = sum(slice_30d) / len(slice_30d)
         var_30 = sum((x - mean_30) ** 2 for x in slice_30d) / max(1, len(slice_30d))
@@ -153,13 +199,14 @@ def generate_seed_scenarios() -> List[Dict[str, Any]]:
 class MaritimeDatabase:
     """
     Persistence manager for Maritime Freight Intelligence.
-    Interacts with Supabase if configured; otherwise seamlessly uses in-memory seed store.
+    Interacts with Supabase if configured; otherwise gracefully falls back
+    to the local CSV feature store and in-memory scenarios.
     """
 
     def __init__(self):
         self._supabase_client = None
         self._is_connected = False
-        self._in_memory_market = generate_seed_market_history()
+        self._local_market = load_local_feature_store()
         self._in_memory_scenarios = generate_seed_scenarios()
         self._initialize_supabase()
 
@@ -184,20 +231,23 @@ class MaritimeDatabase:
                 self._is_connected = False
                 self._supabase_client = None
         else:
-            logger.info("No SUPABASE_URL / SUPABASE_KEY provided. Operating in high-performance local store mode.")
+            logger.info("No SUPABASE_URL / SUPABASE_KEY provided. Operating in CSV local store mode.")
             self._is_connected = False
 
     def get_status(self) -> Dict[str, Any]:
         """Return persistence layer health and connection type."""
         return {
             "is_supabase_connected": self._is_connected,
-            "engine": "Supabase (PostgreSQL)" if self._is_connected else "Local Resilient Store (In-Memory/Seed)",
-            "market_records_count": len(self._in_memory_market),
+            "engine": "Supabase (PostgreSQL)" if self._is_connected else "Local CSV Feature Store",
+            "market_records_count": len(self._local_market),
             "saved_scenarios_count": len(self._in_memory_scenarios),
         }
 
-    def get_market_history(self, limit: int = 60) -> List[Dict[str, Any]]:
-        """Retrieve recent market records."""
+    def get_market_history(self, limit: int = 45) -> List[Dict[str, Any]]:
+        """
+        Retrieve recent market records. If Supabase is empty or returns no data,
+        gracefully slices the last `limit` rows from the local CSV feature store.
+        """
         if self._is_connected and self._supabase_client:
             try:
                 response = (
@@ -207,20 +257,33 @@ class MaritimeDatabase:
                     .limit(limit)
                     .execute()
                 )
-                if response.data:
+                if response.data and len(response.data) > 0:
                     return list(reversed(response.data))
+                else:
+                    logger.info("Supabase market_history returned empty data. Falling back to local CSV.")
             except Exception as e:
-                logger.error(f"Supabase market_history query failed: {e}. Falling back to local store.")
+                logger.error(f"Supabase market_history query failed: {e}. Falling back to local CSV.")
 
-        # Fallback local store (chronological order)
-        return self._in_memory_market[-limit:]
+        # Fallback local CSV store (chronological order sliced to limit)
+        if not self._local_market:
+            self._local_market = load_local_feature_store()
+
+        return self._local_market[-limit:]
 
     def get_latest_market_snapshot(self) -> Dict[str, Any]:
-        """Get the latest recorded day's market metrics."""
+        """
+        Get the latest recorded day's market metrics from the very last row
+        of the available market dataset.
+        """
         history = self.get_market_history(limit=1)
-        if history:
+        if history and len(history) > 0:
             return history[-1]
+
+        if self._local_market and len(self._local_market) > 0:
+            return self._local_market[-1]
+
         return {
+            "id": f"rec-{datetime.now().strftime('%Y-%m-%d')}",
             "date": datetime.now().strftime("%Y-%m-%d"),
             "BDI_Close": 1850.0,
             "BDI_Open": 1845.0,
@@ -249,12 +312,12 @@ class MaritimeDatabase:
             except Exception as e:
                 logger.error(f"Failed to upsert market record to Supabase: {e}")
 
-        # Update in-memory
-        existing_idx = next((i for i, r in enumerate(self._in_memory_market) if r["date"] == rec["date"]), None)
+        # Update local cache
+        existing_idx = next((i for i, r in enumerate(self._local_market) if r["date"] == rec["date"]), None)
         if existing_idx is not None:
-            self._in_memory_market[existing_idx] = rec
+            self._local_market[existing_idx] = rec
         else:
-            self._in_memory_market.append(rec)
+            self._local_market.append(rec)
 
         return rec
 
@@ -269,7 +332,7 @@ class MaritimeDatabase:
                     .limit(limit)
                     .execute()
                 )
-                if response.data:
+                if response.data and len(response.data) > 0:
                     return response.data
             except Exception as e:
                 logger.error(f"Supabase charter_scenarios query failed: {e}. Falling back to local store.")
