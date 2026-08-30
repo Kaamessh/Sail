@@ -15,10 +15,10 @@ from typing import Any, Dict, List, Optional
 import pandas as pd
 from dotenv import load_dotenv
 
-# Load local .env file
 load_dotenv()
 
 logger = logging.getLogger("maritime.database")
+logging.basicConfig(level=logging.INFO)
 
 
 def get_clean_supabase_url() -> str:
@@ -42,45 +42,58 @@ SUPABASE_KEY = (
 
 def load_local_feature_store(filepath: Optional[str] = None) -> List[Dict[str, Any]]:
     """
-    Use Pandas to read the local maritime feature store CSV file.
-    Searches across dataset/maritime_feature_store.csv and returns
-    a list of clean Python dictionaries.
+    Dynamically locate and read the dataset/maritime_feature_store.csv file
+    across local, package, and Vercel serverless environments.
     """
-    candidate_paths = []
-    if filepath:
-        candidate_paths.append(Path(filepath).resolve())
+    filename = "maritime_feature_store.csv"
+    if filepath and Path(filepath).exists():
+        target_path = Path(filepath).resolve()
+    else:
+        target_path = None
+        # 1. Search parent directories
+        curr = Path(__file__).resolve().parent
+        for _ in range(5):
+            for candidate in [
+                curr / "dataset" / filename,
+                curr / filename,
+                curr.parent / "dataset" / filename,
+            ]:
+                if candidate.exists():
+                    target_path = candidate.resolve()
+                    break
+            if target_path:
+                break
+            curr = curr.parent
 
-    base_dir = Path.cwd().resolve()
-    backend_dir = Path(__file__).resolve().parent
-    root_dir = backend_dir.parent
+        # 2. Search working directory and serverless roots
+        if not target_path:
+            for root_dir in [Path.cwd().resolve(), Path("/var/task"), Path("/tmp")]:
+                if root_dir.exists():
+                    for root, _, files in os.walk(root_dir):
+                        if filename in files:
+                            target_path = Path(root).resolve() / filename
+                            break
+                    if target_path:
+                        break
 
-    candidate_paths.extend([
-        base_dir / "dataset" / "maritime_feature_store.csv",
-        root_dir / "dataset" / "maritime_feature_store.csv",
-        backend_dir.parent / "dataset" / "maritime_feature_store.csv",
-    ])
+    if target_path and target_path.exists():
+        try:
+            df = pd.read_csv(target_path)
+            df = df.where(pd.notnull(df), None)
+            records = df.to_dict(orient="records")
+            for rec in records:
+                for k, v in rec.items():
+                    if k not in ["id", "date"] and v is not None:
+                        try:
+                            rec[k] = float(v)
+                        except (ValueError, TypeError):
+                            pass
+            logger.info(f"Loaded {len(records)} records from local CSV feature store: {target_path}")
+            return records
+        except Exception as err:
+            logger.error(f"Error reading CSV feature store at {target_path}: {err}")
 
-    for path in candidate_paths:
-        if path.exists():
-            try:
-                df = pd.read_csv(path)
-                # Fill NAs and format records
-                df = df.where(pd.notnull(df), None)
-                records = df.to_dict(orient="records")
-                # Ensure float types on numeric columns
-                for rec in records:
-                    for k, v in rec.items():
-                        if k not in ["id", "date"] and v is not None:
-                            try:
-                                rec[k] = float(v)
-                            except (ValueError, TypeError):
-                                pass
-                logger.info(f"Loaded {len(records)} records from local CSV: {path}")
-                return records
-            except Exception as err:
-                logger.error(f"Error reading local CSV feature store at {path}: {err}")
-
-    logger.warning("Local CSV feature store not found, generating in-memory baseline.")
+    logger.warning("Local CSV feature store not found via dynamic search, generating seed market data.")
     return generate_seed_market_history()
 
 

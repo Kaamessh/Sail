@@ -15,8 +15,20 @@ const state = {
   baselineOpt: null
 };
 
-// API Base URL
-const API_BASE = '/api';
+// Robust API fetch helper resolving both /api and root endpoints
+async function apiFetch(endpoint, options = {}) {
+  try {
+    const res = await fetch(`/api${endpoint}`, options);
+    if (res.ok) return res;
+    if (res.status === 404) {
+      const resFallback = await fetch(endpoint, options);
+      if (resFallback.ok) return resFallback;
+    }
+    return res;
+  } catch (err) {
+    return await fetch(endpoint, options);
+  }
+}
 
 // Initialize Dashboard
 document.addEventListener('DOMContentLoaded', async () => {
@@ -70,6 +82,10 @@ function setupEventListeners() {
       runCharterOptimization();
     });
   }
+  if (draftInput) {
+    draftInput.addEventListener('input', () => { runCharterOptimization(); });
+  }
+
   // Refresh Market Data Button
   const btnRefresh = document.getElementById('btn-refresh-market');
   if (btnRefresh) {
@@ -113,13 +129,13 @@ function checkDraftAlerts() {
 
 async function checkSystemHealth() {
   try {
-    const res = await fetch(`${API_BASE}/health`);
+    const res = await apiFetch('/health');
     const data = await res.json();
     const statusText = document.getElementById('system-status-text');
     const badge = document.getElementById('system-status-badge');
 
     if (data.status === 'healthy' && data.model_artifacts_loaded) {
-      statusText.innerText = `ML Quantile Models Ready (${data.database.engine})`;
+      statusText.innerText = `ML Models Online (7D, 14D, 30D)`;
       badge.style.borderColor = 'rgba(16, 185, 129, 0.4)';
     } else {
       statusText.innerText = 'ML Models Degraded / Offline';
@@ -133,7 +149,7 @@ async function checkSystemHealth() {
 
 async function loadMarketData() {
   try {
-    const res = await fetch(`${API_BASE}/history?limit=45`);
+    const res = await apiFetch('/history?limit=45');
     if (!res.ok) {
       throw new Error(`Failed to fetch market history: HTTP ${res.status}`);
     }
@@ -167,14 +183,28 @@ function updateExecutiveKPIs(market) {
   const ifo = Number(market.Bunker_IFO380);
   const hi5 = Number(market.Hi5_Spread);
 
-  document.getElementById('kpi-bdi-val').innerText = bdiClose.toLocaleString();
-  document.getElementById('kpi-bdi-7dma').innerText = Math.round(bdi7dMa).toLocaleString();
-  document.getElementById('kpi-bdi-vol').innerText = bdiVol.toFixed(1);
+  if (!isNaN(bdiClose)) {
+    document.getElementById('kpi-bdi-val').innerText = bdiClose.toLocaleString();
+  }
+  if (!isNaN(bdi7dMa)) {
+    document.getElementById('kpi-bdi-7dma').innerText = Math.round(bdi7dMa).toLocaleString();
+  }
+  if (!isNaN(bdiVol)) {
+    document.getElementById('kpi-bdi-vol').innerText = bdiVol.toFixed(1);
+  }
 
-  document.getElementById('kpi-vlsfo-val').innerText = `$${vlsfo.toFixed(2)}`;
-  document.getElementById('kpi-mgo-val').innerText = `$${mgo.toFixed(2)}`;
-  document.getElementById('kpi-ifo-val').innerText = `$${ifo.toFixed(2)}`;
-  document.getElementById('kpi-hi5-badge').innerText = `Hi5: $${Math.round(hi5)}/MT`;
+  if (!isNaN(vlsfo)) {
+    document.getElementById('kpi-vlsfo-val').innerText = `$${vlsfo.toFixed(2)}`;
+  }
+  if (!isNaN(mgo)) {
+    document.getElementById('kpi-mgo-val').innerText = `$${mgo.toFixed(2)}`;
+  }
+  if (!isNaN(ifo)) {
+    document.getElementById('kpi-ifo-val').innerText = `$${ifo.toFixed(2)}`;
+  }
+  if (!isNaN(hi5)) {
+    document.getElementById('kpi-hi5-badge').innerText = `Hi5: $${Math.round(hi5)}/MT`;
+  }
 }
 
 async function fetchForecastCones(marketSnapshot) {
@@ -193,7 +223,7 @@ async function fetchForecastCones(marketSnapshot) {
       BDI_30D_Vol: Number(marketSnapshot.BDI_30D_Vol),
     };
 
-    const res = await fetch(`${API_BASE}/predict`, {
+    const res = await apiFetch('/predict', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
@@ -451,11 +481,13 @@ async function triggerDefaultOptimization() {
 }
 
 async function runCharterOptimization() {
-  const cargo = parseFloat(document.getElementById('input-cargo').value);
-  const origin = document.getElementById('select-origin').value;
-  const destination = document.getElementById('select-destination').value;
-  const mode = document.getElementById('select-mode').value;
-  const draftVal = parseFloat(document.getElementById('input-draft').value) || null;
+  const cargoVal = document.getElementById('input-cargo')?.value;
+  const cargo = parseFloat(cargoVal) || 80000;
+  const origin = document.getElementById('select-origin')?.value || 'Port Hedland';
+  const destination = document.getElementById('select-destination')?.value || 'Dhamra';
+  const mode = document.getElementById('select-mode')?.value || 'TimeCharter';
+  const draftInputVal = document.getElementById('input-draft')?.value;
+  const draftVal = parseFloat(draftInputVal) || null;
 
   const btn = document.getElementById('btn-optimize');
   if (btn) btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Solving Fleet Optimization...';
@@ -469,7 +501,7 @@ async function runCharterOptimization() {
       charter_mode: mode
     };
 
-    const res = await fetch(`${API_BASE}/optimize`, {
+    const res = await apiFetch('/optimize', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
@@ -499,19 +531,25 @@ function renderOptimizationResults(data) {
   const recSummary = document.getElementById('rec-summary-text');
   const recCost = document.getElementById('rec-cost-val');
 
-  recVessel.innerText = `${data.recommended_vessel.toUpperCase()}`;
-  recCost.innerText = `$${Number(data.optimal_landed_cost_pmt).toFixed(2)}`;
-  recSummary.innerText = data.recommendation_summary;
+  if (recVessel) recVessel.innerText = `${data.recommended_vessel.toUpperCase()}`;
+  if (recCost) recCost.innerText = `$${Number(data.optimal_landed_cost_pmt).toFixed(2)}`;
+  if (recSummary) recSummary.innerText = data.recommendation_summary;
 
   // Update Benchmark KPI Card
-  document.getElementById('kpi-benchmark-cost').innerText = `$${Number(data.optimal_landed_cost_pmt).toFixed(2)}`;
-  document.getElementById('kpi-active-route').innerText = `${data.origin_port} → ${data.destination_port}`;
+  const kpiBenchmark = document.getElementById('kpi-benchmark-cost');
+  const kpiRoute = document.getElementById('kpi-active-route');
   const vBadge = document.getElementById('kpi-vessel-badge');
-  vBadge.innerText = data.recommended_vessel;
-  vBadge.className = data.optimization_status === 'OPTIMAL' ? 'kpi-badge up' : 'kpi-badge down';
+
+  if (kpiBenchmark) kpiBenchmark.innerText = `$${Number(data.optimal_landed_cost_pmt).toFixed(2)}`;
+  if (kpiRoute) kpiRoute.innerText = `${data.origin_port} → ${data.destination_port}`;
+  if (vBadge) {
+    vBadge.innerText = data.recommended_vessel;
+    vBadge.className = data.optimization_status === 'OPTIMAL' ? 'kpi-badge up' : 'kpi-badge down';
+  }
 
   // Populate comparison table
   const tbody = document.getElementById('vessel-matrix-body');
+  if (!tbody) return;
   tbody.innerHTML = '';
 
   data.vessel_options.forEach(v => {
@@ -656,7 +694,7 @@ async function saveCurrentScenario() {
   if (btn) btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Saving...';
 
   try {
-    const res = await fetch(`${API_BASE}/history`, {
+    const res = await apiFetch('/history', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),

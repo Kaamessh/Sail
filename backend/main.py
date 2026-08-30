@@ -10,7 +10,7 @@ import traceback
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI, HTTPException, status
+from fastapi import APIRouter, FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -86,10 +86,20 @@ def startup_and_verify_ml_pipeline():
         sys.exit(1)
 
 
-@app.get("/api/health", tags=["System"])
+# Router for API Endpoints (mounted both with and without /api prefix for robust Vercel compatibility)
+api_router = APIRouter()
+
+
+@api_router.get("/health", tags=["System"])
 def get_health() -> Dict[str, Any]:
     """System health check, verifying ML artifact loading and database connectivity."""
     global predictor
+    if predictor is None or not predictor.is_ready:
+        try:
+            predictor = FreightPredictor.get_instance()
+        except Exception as e:
+            logger.error(f"Health check predictor reload error: {e}")
+
     is_ready = predictor is not None and predictor.is_ready
     db_status = db_instance.get_status()
 
@@ -103,13 +113,13 @@ def get_health() -> Dict[str, Any]:
     }
 
 
-@app.get("/api/ports", tags=["Reference"])
+@api_router.get("/ports", tags=["Reference"])
 def get_ports() -> Dict[str, Any]:
     """Retrieve global ports dictionary with permissible drafts and coordinates."""
     return {"ports": GLOBAL_PORTS}
 
 
-@app.post("/api/predict", response_model=ForecastResponse, tags=["Forecasting"])
+@api_router.post("/predict", response_model=ForecastResponse, tags=["Forecasting"])
 def predict_freight(payload: MarketFeaturesInput) -> Dict[str, Any]:
     """
     Generate multi-horizon (7D, 14D, 30D) P10/P50/P90 quantile forecast bands
@@ -138,7 +148,7 @@ def predict_freight(payload: MarketFeaturesInput) -> Dict[str, Any]:
         )
 
 
-@app.post("/api/optimize", response_model=OptimizeResponse, tags=["Optimization"])
+@api_router.post("/optimize", response_model=OptimizeResponse, tags=["Optimization"])
 def optimize_chartering(payload: OptimizeRequest) -> Dict[str, Any]:
     """
     Evaluate vessel suitability (Capesize vs Panamax vs Supramax),
@@ -176,7 +186,7 @@ def optimize_chartering(payload: OptimizeRequest) -> Dict[str, Any]:
         )
 
 
-@app.post("/api/stress-test", response_model=StressTestResponse, tags=["Optimization"])
+@api_router.post("/stress-test", response_model=StressTestResponse, tags=["Optimization"])
 def stress_test(payload: StressTestRequest) -> Dict[str, Any]:
     """
     Perform sensitivity stress-testing on bunker price spikes and freight rate swings.
@@ -205,7 +215,7 @@ def stress_test(payload: StressTestRequest) -> Dict[str, Any]:
         )
 
 
-@app.get("/api/history", tags=["History"])
+@api_router.get("/history", tags=["History"])
 def get_history(limit: int = 45) -> Dict[str, Any]:
     """
     Retrieve historical market snapshots and saved scenarios.
@@ -222,7 +232,7 @@ def get_history(limit: int = 45) -> Dict[str, Any]:
     }
 
 
-@app.post("/api/history", tags=["History"])
+@api_router.post("/history", tags=["History"])
 def save_scenario(payload: SaveScenarioRequest) -> Dict[str, Any]:
     """
     Save or bookmark a chartering decision run.
@@ -230,6 +240,10 @@ def save_scenario(payload: SaveScenarioRequest) -> Dict[str, Any]:
     saved = db_instance.save_scenario(payload.model_dump())
     return {"status": "saved", "scenario": saved}
 
+
+# Mount API routes at both /api and root
+app.include_router(api_router, prefix="/api")
+app.include_router(api_router, prefix="")
 
 # Static Frontend Serving
 frontend_dir = Path(__file__).resolve().parent.parent / "frontend"
