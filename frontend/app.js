@@ -38,7 +38,7 @@ function setupEventListeners() {
     });
   });
 
-  // Charter Form Submit
+  // Charter Form Submit & Real-Time Auto-Evaluation on Input Changes
   const charterForm = document.getElementById('charter-form');
   if (charterForm) {
     charterForm.addEventListener('submit', async (e) => {
@@ -47,6 +47,29 @@ function setupEventListeners() {
     });
   }
 
+  // Reactive Instant Calculation Listeners
+  const cargoInput = document.getElementById('input-cargo');
+  const modeSelect = document.getElementById('select-mode');
+  const originSelect = document.getElementById('select-origin');
+  const destSelect = document.getElementById('select-destination');
+  const draftInput = document.getElementById('input-draft');
+
+  if (cargoInput) {
+    cargoInput.addEventListener('input', () => { runCharterOptimization(); });
+  }
+  if (modeSelect) {
+    modeSelect.addEventListener('change', () => { runCharterOptimization(); });
+  }
+  if (originSelect && destSelect) {
+    originSelect.addEventListener('change', () => {
+      checkDraftAlerts();
+      runCharterOptimization();
+    });
+    destSelect.addEventListener('change', () => {
+      checkDraftAlerts();
+      runCharterOptimization();
+    });
+  }
   // Refresh Market Data Button
   const btnRefresh = document.getElementById('btn-refresh-market');
   if (btnRefresh) {
@@ -73,14 +96,6 @@ function setupEventListeners() {
   if (sliderBunker && sliderBdi) {
     sliderBunker.addEventListener('input', updateStressTestResults);
     sliderBdi.addEventListener('input', updateStressTestResults);
-  }
-
-  // Origin Port Draft helper
-  const originSelect = document.getElementById('select-origin');
-  const destSelect = document.getElementById('select-destination');
-  if (originSelect && destSelect) {
-    originSelect.addEventListener('change', checkDraftAlerts);
-    destSelect.addEventListener('change', checkDraftAlerts);
   }
 }
 
