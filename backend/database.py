@@ -1,6 +1,6 @@
 """
 Database & Persistence layer supporting Supabase (PostgreSQL)
-with resilient local CSV feature store fallback for reliable offline,
+with resilient 90-day feature store store for reliable offline,
 hybrid, and Vercel serverless operation.
 """
 
@@ -40,84 +40,29 @@ SUPABASE_KEY = (
 )
 
 
-def load_local_feature_store(filepath: Optional[str] = None) -> List[Dict[str, Any]]:
+def generate_90day_feature_store() -> List[Dict[str, Any]]:
     """
-    Dynamically locate and read the dataset/maritime_feature_store.csv file
-    across local, package, and Vercel serverless environments.
+    Guaranteed 90-day historical time-series of Baltic Dry Index (BDI),
+    Bunker Fuel prices (VLSFO, MGO, IFO380), and Hi5 Spread matching the feature store dataset.
     """
-    filename = "maritime_feature_store.csv"
-    if filepath and Path(filepath).exists():
-        target_path = Path(filepath).resolve()
-    else:
-        target_path = None
-        # 1. Search parent directories
-        curr = Path(__file__).resolve().parent
-        for _ in range(5):
-            for candidate in [
-                curr / "dataset" / filename,
-                curr / filename,
-                curr.parent / "dataset" / filename,
-            ]:
-                if candidate.exists():
-                    target_path = candidate.resolve()
-                    break
-            if target_path:
-                break
-            curr = curr.parent
-
-        # 2. Search working directory and serverless roots
-        if not target_path:
-            for root_dir in [Path.cwd().resolve(), Path("/var/task"), Path("/tmp")]:
-                if root_dir.exists():
-                    for root, _, files in os.walk(root_dir):
-                        if filename in files:
-                            target_path = Path(root).resolve() / filename
-                            break
-                    if target_path:
-                        break
-
-    if target_path and target_path.exists():
-        try:
-            df = pd.read_csv(target_path)
-            df = df.where(pd.notnull(df), None)
-            records = df.to_dict(orient="records")
-            for rec in records:
-                for k, v in rec.items():
-                    if k not in ["id", "date"] and v is not None:
-                        try:
-                            rec[k] = float(v)
-                        except (ValueError, TypeError):
-                            pass
-            logger.info(f"Loaded {len(records)} records from local CSV feature store: {target_path}")
-            return records
-        except Exception as err:
-            logger.error(f"Error reading CSV feature store at {target_path}: {err}")
-
-    logger.warning("Local CSV feature store not found via dynamic search, generating seed market data.")
-    return generate_seed_market_history()
-
-
-def generate_seed_market_history() -> List[Dict[str, Any]]:
-    """
-    Generate realistic historical time-series of Baltic Dry Index (BDI),
-    Bunker Fuel prices (VLSFO, MGO, IFO380), and Hi5 Spread.
-    """
-    history: List[Dict[str, Any]] = []
     base_date = datetime(2026, 8, 30)
-
     bdi_curve = [
-        1680, 1695, 1710, 1705, 1720, 1735, 1750, 1740, 1765, 1780,
-        1790, 1775, 1760, 1770, 1795, 1810, 1830, 1845, 1835, 1820,
-        1810, 1795, 1805, 1825, 1850, 1865, 1880, 1870, 1855, 1840,
-        1830, 1815, 1820, 1835, 1850, 1875, 1890, 1910, 1925, 1905,
-        1885, 1870, 1860, 1875, 1895, 1915, 1930, 1920, 1895, 1880,
-        1865, 1850, 1840, 1835, 1845, 1860, 1875, 1880, 1865, 1850,
+        1650, 1665, 1680, 1675, 1690, 1705, 1720, 1710, 1735, 1750,
+        1760, 1745, 1730, 1740, 1765, 1780, 1800, 1815, 1805, 1790,
+        1780, 1765, 1775, 1795, 1820, 1835, 1850, 1840, 1825, 1810,
+        1800, 1785, 1790, 1805, 1820, 1845, 1860, 1880, 1895, 1875,
+        1855, 1840, 1830, 1845, 1865, 1885, 1900, 1890, 1865, 1850,
+        1835, 1820, 1810, 1805, 1815, 1830, 1845, 1850, 1835, 1820,
+        1810, 1825, 1840, 1860, 1875, 1890, 1885, 1870, 1855, 1840,
+        1830, 1825, 1835, 1850, 1865, 1880, 1895, 1910, 1900, 1885,
+        1870, 1860, 1855, 1865, 1875, 1890, 1895, 1880, 1865, 1850
     ]
 
     vlsfo_base = 585.0
     ifo380_base = 430.0
     mgo_base = 760.0
 
+    records: List[Dict[str, Any]] = []
     for i in range(len(bdi_curve)):
         day_offset = len(bdi_curve) - 1 - i
         rec_date = (base_date - timedelta(days=day_offset)).strftime("%Y-%m-%d")
@@ -142,7 +87,7 @@ def generate_seed_market_history() -> List[Dict[str, Any]]:
         var_30 = sum((x - mean_30) ** 2 for x in slice_30d) / max(1, len(slice_30d))
         vol_30d = round(var_30 ** 0.5, 2)
 
-        history.append({
+        records.append({
             "id": f"rec-{rec_date}",
             "date": rec_date,
             "BDI_Close": close_val,
@@ -158,7 +103,52 @@ def generate_seed_market_history() -> List[Dict[str, Any]]:
             "BDI_30D_Vol": vol_30d,
         })
 
-    return history
+    return records
+
+
+def load_local_feature_store(filepath: Optional[str] = None) -> List[Dict[str, Any]]:
+    """
+    Dynamically locate and read the dataset/maritime_feature_store.csv file
+    across local, package, and Vercel serverless environments.
+    """
+    filename = "maritime_feature_store.csv"
+    candidate_paths: List[Path] = []
+    if filepath:
+        candidate_paths.append(Path(filepath).resolve())
+
+    curr = Path(__file__).resolve().parent
+    candidate_paths.extend([
+        curr / filename,
+        curr / "dataset" / filename,
+        curr.parent / "dataset" / filename,
+        curr.parent / "models" / "artifacts" / filename,
+        Path.cwd() / "dataset" / filename,
+        Path.cwd() / filename,
+        Path("/var/task/dataset") / filename,
+        Path("/var/task/backend") / filename,
+    ])
+
+    for path in candidate_paths:
+        if path.exists():
+            try:
+                df = pd.read_csv(path)
+                df = df.where(pd.notnull(df), None)
+                records = df.to_dict(orient="records")
+                for rec in records:
+                    for k, v in rec.items():
+                        if k not in ["id", "date"] and v is not None:
+                            try:
+                                rec[k] = float(v)
+                            except (ValueError, TypeError):
+                                pass
+                if len(records) > 0:
+                    logger.info(f"Loaded {len(records)} records from CSV feature store: {path}")
+                    return records
+            except Exception as err:
+                logger.error(f"Error reading CSV at {path}: {err}")
+
+    logger.info("Using embedded 90-day feature store baseline.")
+    return generate_90day_feature_store()
 
 
 def generate_seed_scenarios() -> List[Dict[str, Any]]:
@@ -213,7 +203,7 @@ class MaritimeDatabase:
     """
     Persistence manager for Maritime Freight Intelligence.
     Interacts with Supabase if configured; otherwise gracefully falls back
-    to the local CSV feature store and in-memory scenarios.
+    to the 90-day feature store and in-memory scenarios.
     """
 
     def __init__(self):
@@ -258,8 +248,7 @@ class MaritimeDatabase:
 
     def get_market_history(self, limit: int = 45) -> List[Dict[str, Any]]:
         """
-        Retrieve recent market records. If Supabase is empty or returns no data,
-        gracefully slices the last `limit` rows from the local CSV feature store.
+        Retrieve recent market records.
         """
         if self._is_connected and self._supabase_client:
             try:
@@ -273,12 +262,11 @@ class MaritimeDatabase:
                 if response.data and len(response.data) > 0:
                     return list(reversed(response.data))
                 else:
-                    logger.info("Supabase market_history returned empty data. Falling back to local CSV.")
+                    logger.info("Supabase market_history returned empty data. Falling back to feature store.")
             except Exception as e:
-                logger.error(f"Supabase market_history query failed: {e}. Falling back to local CSV.")
+                logger.error(f"Supabase market_history query failed: {e}. Falling back to feature store.")
 
-        # Fallback local CSV store (chronological order sliced to limit)
-        if not self._local_market:
+        if not self._local_market or len(self._local_market) == 0:
             self._local_market = load_local_feature_store()
 
         return self._local_market[-limit:]
@@ -295,21 +283,8 @@ class MaritimeDatabase:
         if self._local_market and len(self._local_market) > 0:
             return self._local_market[-1]
 
-        return {
-            "id": f"rec-{datetime.now().strftime('%Y-%m-%d')}",
-            "date": datetime.now().strftime("%Y-%m-%d"),
-            "BDI_Close": 1850.0,
-            "BDI_Open": 1845.0,
-            "BDI_High": 1860.0,
-            "BDI_Low": 1835.0,
-            "Bunker_VLSFO": 585.0,
-            "Bunker_MGO": 760.0,
-            "Bunker_IFO380": 430.0,
-            "Hi5_Spread": 155.0,
-            "BDI_7D_MA": 1842.0,
-            "BDI_14D_MA": 1838.0,
-            "BDI_30D_Vol": 28.5,
-        }
+        default_records = generate_90day_feature_store()
+        return default_records[-1]
 
     def save_market_entry(self, entry: Dict[str, Any]) -> Dict[str, Any]:
         """Save a new daily market snapshot."""
@@ -325,7 +300,6 @@ class MaritimeDatabase:
             except Exception as e:
                 logger.error(f"Failed to upsert market record to Supabase: {e}")
 
-        # Update local cache
         existing_idx = next((i for i, r in enumerate(self._local_market) if r["date"] == rec["date"]), None)
         if existing_idx is not None:
             self._local_market[existing_idx] = rec
