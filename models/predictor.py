@@ -63,27 +63,19 @@ class FreightPredictor:
         return cls._instance
 
     def _locate_artifact_path(self, filename: str, custom_dir: Optional[Union[str, Path]] = None) -> Path:
-        """
-        Rigidly locate the artifact file using an absolute path based on the project root
-        directory (models/artifacts/<filename>) and fail explicitly if not found.
-        """
+        """Foolproof absolute path resolution for local and serverless environments."""
         if custom_dir:
-            target_path = Path(custom_dir).resolve() / filename
-        else:
-            base_dir = Path.cwd().resolve()
-            target_path = base_dir / "models" / "artifacts" / filename
+            target = Path(custom_dir) / filename
+            if target.exists():
+                return target
 
-            # Fallback to module relative path if cwd differs (e.g. inside subpackage)
-            if not target_path.exists():
-                module_dir = Path(__file__).resolve().parent
-                target_path = module_dir / "artifacts" / filename
+        current_file_dir = Path(__file__).resolve().parent
+        target_path = current_file_dir / "artifacts" / filename
 
-        if not target_path.exists():
-            raise FileNotFoundError(
-                f"Required model artifact '{filename}' not found at exact path: {target_path}"
-            )
+        if target_path.exists():
+            return target_path
 
-        return target_path
+        raise FileNotFoundError(f"CRITICAL: Could not find '{filename}' at exactly '{target_path}'.")
 
     def load_artifacts(self, artifacts_dir: Optional[Union[str, Path]] = None) -> None:
         """Load joblib models, scalers, and metadata."""
