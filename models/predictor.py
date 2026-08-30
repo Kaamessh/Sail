@@ -63,30 +63,27 @@ class FreightPredictor:
         return cls._instance
 
     def _locate_artifact_path(self, filename: str, custom_dir: Optional[Union[str, Path]] = None) -> Path:
-        """Search for artifact files across standard local directories."""
-        candidate_dirs: List[Path] = []
+        """
+        Rigidly locate the artifact file using an absolute path based on the project root
+        directory (models/artifacts/<filename>) and fail explicitly if not found.
+        """
         if custom_dir:
-            candidate_dirs.append(Path(custom_dir))
+            target_path = Path(custom_dir).resolve() / filename
+        else:
+            base_dir = Path.cwd().resolve()
+            target_path = base_dir / "models" / "artifacts" / filename
 
-        current_file_dir = Path(__file__).resolve().parent
-        root_dir = current_file_dir.parent
+            # Fallback to module relative path if cwd differs (e.g. inside subpackage)
+            if not target_path.exists():
+                module_dir = Path(__file__).resolve().parent
+                target_path = module_dir / "artifacts" / filename
 
-        candidate_dirs.extend([
-            current_file_dir / "artifacts",
-            root_dir / "model_artifacts",
-            root_dir / "models" / "artifacts",
-            Path.cwd() / "model_artifacts",
-            Path.cwd() / "models" / "artifacts",
-        ])
+        if not target_path.exists():
+            raise FileNotFoundError(
+                f"Required model artifact '{filename}' not found at exact path: {target_path}"
+            )
 
-        for c_dir in candidate_dirs:
-            target = c_dir / filename
-            if target.exists():
-                return target
-
-        raise FileNotFoundError(
-            f"Could not locate model artifact '{filename}'. Checked paths: {[str(d) for d in candidate_dirs]}"
-        )
+        return target_path
 
     def load_artifacts(self, artifacts_dir: Optional[Union[str, Path]] = None) -> None:
         """Load joblib models, scalers, and metadata."""

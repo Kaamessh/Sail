@@ -1,7 +1,7 @@
 """
 Prescriptive Maritime Chartering & Fleet Optimization Engine.
 Evaluates vessel class matching (Capesize, Panamax, Supramax), route draft constraints,
-bunker fuel economics, and Spot vs Time Charter landed costs using SciPy / MILP algorithms.
+bunker fuel economics, and Spot vs Time Charter landed costs.
 """
 
 import math
@@ -9,7 +9,6 @@ from dataclasses import asdict, dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
-from scipy.optimize import milp, LinearConstraint, Bounds
 
 # Port Database with Max Permissible Drafts (meters), typical loading/discharge rates (MT/day)
 GLOBAL_PORTS: Dict[str, Dict[str, Any]] = {
