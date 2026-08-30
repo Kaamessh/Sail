@@ -1,9 +1,11 @@
 """
 FastAPI Full-Stack Application for Maritime Freight Intelligence & Chartering Decision System.
+Strict 100% Genuine ML Pipeline with Autonomous Startup Verification.
 """
 
 import logging
 import os
+import sys
 import traceback
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -44,24 +46,50 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Instantiate predictor singleton at startup
+# Global Predictor Reference
 try:
     predictor = FreightPredictor.get_instance()
 except Exception as err:
-    logger.error(f"Failed to initialize FreightPredictor on startup: {err}")
+    logger.warning(f"Predictor eager init deferral: {err}")
     predictor = None
+
+
+@app.on_event("startup")
+def startup_and_verify_ml_pipeline():
+    """
+    Autonomous Startup Test:
+    Ensures model weights and scalers load properly and executes an actual test prediction.
+    If the test fails, immediately terminates execution with an explicit traceback.
+    """
+    global predictor
+    logger.info("Starting Autonomous ML Pipeline Verification...")
+    try:
+        predictor = FreightPredictor.get_instance()
+        if not predictor or not predictor.is_ready:
+            raise RuntimeError("FreightPredictor instance failed initialization.")
+
+        # Test inference with latest market record
+        test_snapshot = db_instance.get_latest_market_snapshot()
+        logger.info(f"Running startup test inference with snapshot: {test_snapshot}")
+        test_result = predictor.predict(test_snapshot)
+
+        if "forecasts" not in test_result or "30D" not in test_result["forecasts"]:
+            raise ValueError(f"Startup test inference returned unexpected payload: {test_result}")
+
+        logger.info(
+            f"STARTUP ML VERIFICATION SUCCESSFUL: 30D P50 Forecast = {test_result['forecasts']['30D']['p50']} pts."
+        )
+    except Exception as exc:
+        err_trace = traceback.format_exc()
+        logger.critical(f"FATAL: Autonomous ML Pipeline Verification FAILED on startup!\n{err_trace}")
+        print(f"\n==================== FATAL ML STARTUP ERROR ====================\n{err_trace}\n", file=sys.stderr)
+        sys.exit(1)
 
 
 @app.get("/api/health", tags=["System"])
 def get_health() -> Dict[str, Any]:
     """System health check, verifying ML artifact loading and database connectivity."""
     global predictor
-    if predictor is None or not predictor.is_ready:
-        try:
-            predictor = FreightPredictor.get_instance()
-        except Exception as e:
-            logger.error(f"Health check predictor reload error: {e}")
-
     is_ready = predictor is not None and predictor.is_ready
     db_status = db_instance.get_status()
 
@@ -106,7 +134,7 @@ def predict_freight(payload: MarketFeaturesInput) -> Dict[str, Any]:
         logger.error(f"Predictor inference error: {traceback.format_exc()}")
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"Prediction error: {str(e)} | Details: {traceback.format_exc()}",
+            detail=f"Prediction error: {str(e)} | Trace: {traceback.format_exc()}",
         )
 
 
@@ -117,22 +145,17 @@ def optimize_chartering(payload: OptimizeRequest) -> Dict[str, Any]:
     route draft constraints, and Spot vs Time Charter landed $/Tonne.
     """
     global predictor
-    # If BDI forecast is not overridden, get 30D P50 prediction from current market
     bdi_rate = payload.bdi_forecast_override
     if bdi_rate is None or bdi_rate <= 0:
         latest = db_instance.get_latest_market_snapshot()
         if predictor and predictor.is_ready:
-            try:
-                preds = predictor.predict(latest)
-                bdi_rate = preds["forecasts"]["30D"]["p50"]
-            except Exception as e:
-                logger.warning(f"Optimization forecast inference fallback: {e}")
-                bdi_rate = latest.get("BDI_Close", 1850.0)
+            preds = predictor.predict(latest)
+            bdi_rate = preds["forecasts"]["30D"]["p50"]
         else:
-            bdi_rate = latest.get("BDI_Close", 1850.0)
+            bdi_rate = float(latest["BDI_Close"])
 
-    vlsfo_price = payload.vlsfo_price_override or 585.0
-    mgo_price = payload.mgo_price_override or 760.0
+    vlsfo_price = payload.vlsfo_price_override or float(db_instance.get_latest_market_snapshot().get("Bunker_VLSFO", 585.0))
+    mgo_price = payload.mgo_price_override or float(db_instance.get_latest_market_snapshot().get("Bunker_MGO", 760.0))
 
     try:
         result = CharterOptimizer.optimize_charter(
@@ -156,17 +179,21 @@ def optimize_chartering(payload: OptimizeRequest) -> Dict[str, Any]:
 @app.post("/api/stress-test", response_model=StressTestResponse, tags=["Optimization"])
 def stress_test(payload: StressTestRequest) -> Dict[str, Any]:
     """
-    Perform sensitivity stress-testing on bunker price spikes (+10%, +25%, +50%)
-    and freight rate swings.
+    Perform sensitivity stress-testing on bunker price spikes and freight rate swings.
     """
+    latest = db_instance.get_latest_market_snapshot()
+    base_bdi = payload.base_bdi or float(latest.get("BDI_Close", 1850.0))
+    base_vlsfo = payload.base_vlsfo or float(latest.get("Bunker_VLSFO", 585.0))
+    base_mgo = payload.base_mgo or float(latest.get("Bunker_MGO", 760.0))
+
     try:
         res = CharterOptimizer.run_stress_test(
             cargo_tonnes=payload.cargo_tonnes,
             origin=payload.origin_port,
             destination=payload.destination_port,
-            base_bdi=payload.base_bdi or 1850.0,
-            base_vlsfo=payload.base_vlsfo or 585.0,
-            base_mgo=payload.base_mgo or 760.0,
+            base_bdi=base_bdi,
+            base_vlsfo=base_vlsfo,
+            base_mgo=base_mgo,
             bunker_spike_percentages=payload.bunker_spikes,
             bdi_shift_percentages=payload.bdi_shifts,
         )

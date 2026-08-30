@@ -7,6 +7,7 @@ forecasting across 7D, 14D, and 30D horizons at P10, P50, and P90 confidence lev
 import json
 import logging
 import os
+import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -64,34 +65,58 @@ class FreightPredictor:
 
     def _locate_artifact_path(self, filename: str, custom_dir: Optional[Union[str, Path]] = None) -> Path:
         """
-        Aggressively resolve the absolute path to model artifacts across local,
-        packaged, and serverless environments.
+        Dynamically search for model artifact files using upward directory traversal
+        and recursive workspace walkers for local, containerized, and serverless environments.
         """
-        candidate_paths: List[Path] = []
         if custom_dir:
-            candidate_paths.append(Path(custom_dir).resolve() / filename)
+            custom_target = Path(custom_dir).resolve() / filename
+            if custom_target.exists():
+                return custom_target
 
+        searched_paths: List[str] = []
+
+        # 1. Upward hierarchy scan from current module directory
         module_dir = Path(__file__).resolve().parent
-        root_dir = module_dir.parent
+        current_scan = module_dir
+        for _ in range(5):
+            candidates = [
+                current_scan / "artifacts" / filename,
+                current_scan / "models" / "artifacts" / filename,
+                current_scan / filename,
+            ]
+            for c in candidates:
+                searched_paths.append(str(c))
+                if c.exists():
+                    logger.info(f"Artifact '{filename}' resolved at: {c.resolve()}")
+                    return c.resolve()
+            if current_scan.parent == current_scan:
+                break
+            current_scan = current_scan.parent
+
+        # 2. Recursive scan of working directory
         cwd_dir = Path.cwd().resolve()
+        for root, _, files in os.walk(cwd_dir):
+            if filename in files:
+                found_path = Path(root).resolve() / filename
+                logger.info(f"Artifact '{filename}' found via cwd walk at: {found_path}")
+                return found_path
 
-        candidate_paths.extend([
-            module_dir / "artifacts" / filename,
-            root_dir / "models" / "artifacts" / filename,
-            cwd_dir / "models" / "artifacts" / filename,
-            cwd_dir / "artifacts" / filename,
-            Path("/var/task/models/artifacts") / filename,
-            Path("/var/task/artifacts") / filename,
-        ])
+        # 3. Serverless Lambda/Vercel standard path check
+        serverless_roots = [Path("/var/task"), Path("/tmp")]
+        for s_root in serverless_roots:
+            if s_root.exists():
+                for root, _, files in os.walk(s_root):
+                    if filename in files:
+                        found_path = Path(root).resolve() / filename
+                        logger.info(f"Artifact '{filename}' found in serverless root at: {found_path}")
+                        return found_path
 
-        for target in candidate_paths:
-            if target.exists():
-                return target
-
-        checked_str = "\n - ".join([str(p) for p in candidate_paths])
-        raise FileNotFoundError(
-            f"CRITICAL: Model artifact '{filename}' could not be found. Checked paths:\n - {checked_str}"
+        error_msg = (
+            f"FATAL: Required model artifact '{filename}' could not be located anywhere in the filesystem.\n"
+            f"Searched paths include:\n" + "\n".join(f" - {p}" for p in searched_paths[:10])
         )
+        logger.error(error_msg)
+        raise FileNotFoundError(error_msg)
 
     def load_artifacts(self, artifacts_dir: Optional[Union[str, Path]] = None) -> None:
         """Load joblib models, scalers, and metadata."""
@@ -112,7 +137,7 @@ class FreightPredictor:
             self._is_loaded = True
             logger.info("FreightPredictor ML artifacts loaded successfully.")
         except Exception as e:
-            logger.error(f"Error loading model artifacts: {e}", exc_info=True)
+            logger.error(f"FATAL: Error loading model artifacts: {e}", exc_info=True)
             self._is_loaded = False
             raise
 
@@ -127,41 +152,37 @@ class FreightPredictor:
     @staticmethod
     def compute_derived_features(data: Dict[str, Any]) -> Dict[str, float]:
         """
-        Compute derived technical indicators and spreads if not provided directly.
-        Derived features:
-        - Hi5_Spread = Bunker_VLSFO - Bunker_IFO380
-        - BDI_7D_MA (defaults to BDI_Close if no series provided)
-        - BDI_14D_MA (defaults to BDI_Close * 0.99 if no series provided)
-        - BDI_30D_Vol (defaults to historical rolling baseline if missing)
+        Compute derived technical indicators and spreads from input market features.
         """
         features = dict(data)
 
-        # 1. Hi5 Spread
+        if "BDI_Close" not in features or features["BDI_Close"] is None:
+            raise ValueError("Required feature 'BDI_Close' is missing from input data.")
+        bdi_close = float(features["BDI_Close"])
+
         vlsfo = float(features.get("Bunker_VLSFO", 585.0))
         ifo380 = float(features.get("Bunker_IFO380", 430.0))
+
         if "Hi5_Spread" not in features or features["Hi5_Spread"] is None:
             features["Hi5_Spread"] = round(vlsfo - ifo380, 2)
 
-        # 2. BDI Open/High/Low defaults relative to Close if missing
-        bdi_close = float(features.get("BDI_Close", 1850.0))
         if "BDI_Open" not in features or features["BDI_Open"] is None:
             features["BDI_Open"] = bdi_close
         if "BDI_High" not in features or features["BDI_High"] is None:
-            features["BDI_High"] = max(bdi_close, float(features.get("BDI_Open", bdi_close))) * 1.01
+            features["BDI_High"] = max(bdi_close, float(features.get("BDI_Open", bdi_close)))
         if "BDI_Low" not in features or features["BDI_Low"] is None:
-            features["BDI_Low"] = min(bdi_close, float(features.get("BDI_Open", bdi_close))) * 0.99
+            features["BDI_Low"] = min(bdi_close, float(features.get("BDI_Open", bdi_close)))
         if "Bunker_MGO" not in features or features["Bunker_MGO"] is None:
             features["Bunker_MGO"] = round(vlsfo * 1.30, 2)
 
-        # 3. Moving Averages & Volatility
         if "BDI_7D_MA" not in features or features["BDI_7D_MA"] is None:
-            features["BDI_7D_MA"] = round(bdi_close * 0.995, 2)
+            features["BDI_7D_MA"] = bdi_close
         if "BDI_14D_MA" not in features or features["BDI_14D_MA"] is None:
-            features["BDI_14D_MA"] = round(bdi_close * 0.985, 2)
+            features["BDI_14D_MA"] = bdi_close
         if "BDI_30D_Vol" not in features or features["BDI_30D_Vol"] is None:
-            features["BDI_30D_Vol"] = round(bdi_close * 0.025, 2)
+            features["BDI_30D_Vol"] = 0.0
 
-        return {k: float(features[k]) for k in FEATURE_COLUMNS if k in features}
+        return {k: float(features[k]) for k in FEATURE_COLUMNS}
 
     def prepare_feature_array(self, features_dict: Dict[str, Any]) -> np.ndarray:
         """
@@ -169,10 +190,6 @@ class FreightPredictor:
         in the strict order expected by the trained scalers.
         """
         complete_features = self.compute_derived_features(features_dict)
-        missing_keys = [col for col in FEATURE_COLUMNS if col not in complete_features]
-        if missing_keys:
-            raise ValueError(f"Missing required feature columns: {missing_keys}")
-
         feature_values = [complete_features[col] for col in FEATURE_COLUMNS]
         return np.array([feature_values], dtype=np.float64)
 
