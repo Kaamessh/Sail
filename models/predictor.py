@@ -63,19 +63,35 @@ class FreightPredictor:
         return cls._instance
 
     def _locate_artifact_path(self, filename: str, custom_dir: Optional[Union[str, Path]] = None) -> Path:
-        """Foolproof absolute path resolution for local and serverless environments."""
+        """
+        Aggressively resolve the absolute path to model artifacts across local,
+        packaged, and serverless environments.
+        """
+        candidate_paths: List[Path] = []
         if custom_dir:
-            target = Path(custom_dir) / filename
+            candidate_paths.append(Path(custom_dir).resolve() / filename)
+
+        module_dir = Path(__file__).resolve().parent
+        root_dir = module_dir.parent
+        cwd_dir = Path.cwd().resolve()
+
+        candidate_paths.extend([
+            module_dir / "artifacts" / filename,
+            root_dir / "models" / "artifacts" / filename,
+            cwd_dir / "models" / "artifacts" / filename,
+            cwd_dir / "artifacts" / filename,
+            Path("/var/task/models/artifacts") / filename,
+            Path("/var/task/artifacts") / filename,
+        ])
+
+        for target in candidate_paths:
             if target.exists():
                 return target
 
-        current_file_dir = Path(__file__).resolve().parent
-        target_path = current_file_dir / "artifacts" / filename
-
-        if target_path.exists():
-            return target_path
-
-        raise FileNotFoundError(f"CRITICAL: Could not find '{filename}' at exactly '{target_path}'.")
+        checked_str = "\n - ".join([str(p) for p in candidate_paths])
+        raise FileNotFoundError(
+            f"CRITICAL: Model artifact '{filename}' could not be found. Checked paths:\n - {checked_str}"
+        )
 
     def load_artifacts(self, artifacts_dir: Optional[Union[str, Path]] = None) -> None:
         """Load joblib models, scalers, and metadata."""
@@ -84,17 +100,17 @@ class FreightPredictor:
             scalers_path = self._locate_artifact_path("freight_scalers.joblib", artifacts_dir)
             metadata_path = self._locate_artifact_path("metadata.json", artifacts_dir)
 
-            logger.info(f"Loading freight models from {models_path}")
+            logger.info(f"Loading freight models from: {models_path}")
             self._models = joblib.load(models_path)
 
-            logger.info(f"Loading freight scalers from {scalers_path}")
+            logger.info(f"Loading freight scalers from: {scalers_path}")
             self._scalers = joblib.load(scalers_path)
 
             with open(metadata_path, "r", encoding="utf-8") as f:
                 self._metadata = json.load(f)
 
             self._is_loaded = True
-            logger.info("FreightPredictor artifacts loaded successfully.")
+            logger.info("FreightPredictor ML artifacts loaded successfully.")
         except Exception as e:
             logger.error(f"Error loading model artifacts: {e}", exc_info=True)
             self._is_loaded = False
@@ -121,13 +137,13 @@ class FreightPredictor:
         features = dict(data)
 
         # 1. Hi5 Spread
-        vlsfo = float(features.get("Bunker_VLSFO", 600.0))
-        ifo380 = float(features.get("Bunker_IFO380", 450.0))
+        vlsfo = float(features.get("Bunker_VLSFO", 585.0))
+        ifo380 = float(features.get("Bunker_IFO380", 430.0))
         if "Hi5_Spread" not in features or features["Hi5_Spread"] is None:
             features["Hi5_Spread"] = round(vlsfo - ifo380, 2)
 
         # 2. BDI Open/High/Low defaults relative to Close if missing
-        bdi_close = float(features.get("BDI_Close", 1800.0))
+        bdi_close = float(features.get("BDI_Close", 1850.0))
         if "BDI_Open" not in features or features["BDI_Open"] is None:
             features["BDI_Open"] = bdi_close
         if "BDI_High" not in features or features["BDI_High"] is None:
@@ -135,7 +151,7 @@ class FreightPredictor:
         if "BDI_Low" not in features or features["BDI_Low"] is None:
             features["BDI_Low"] = min(bdi_close, float(features.get("BDI_Open", bdi_close))) * 0.99
         if "Bunker_MGO" not in features or features["Bunker_MGO"] is None:
-            features["Bunker_MGO"] = vlsfo * 1.30
+            features["Bunker_MGO"] = round(vlsfo * 1.30, 2)
 
         # 3. Moving Averages & Volatility
         if "BDI_7D_MA" not in features or features["BDI_7D_MA"] is None:
@@ -162,7 +178,7 @@ class FreightPredictor:
 
     def predict(self, features_dict: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Generate multi-horizon quantile forecast bands.
+        Generate multi-horizon quantile forecast bands from real ML models.
         """
         if not self.is_ready:
             raise RuntimeError("FreightPredictor models are not loaded.")

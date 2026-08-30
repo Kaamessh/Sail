@@ -2,7 +2,9 @@
 FastAPI Full-Stack Application for Maritime Freight Intelligence & Chartering Decision System.
 """
 
+import logging
 import os
+import traceback
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -24,6 +26,9 @@ from backend.schemas import (
 )
 from models.predictor import FreightPredictor
 
+logger = logging.getLogger("maritime.main")
+logging.basicConfig(level=logging.INFO)
+
 app = FastAPI(
     title="Maritime Freight Intelligence & Chartering Decision System",
     description="Multi-horizon Quantile Regression Freight Forecasting, Prescriptive Chartering Optimizer, and Dark Maritime Dashboard",
@@ -43,12 +48,20 @@ app.add_middleware(
 try:
     predictor = FreightPredictor.get_instance()
 except Exception as err:
+    logger.error(f"Failed to initialize FreightPredictor on startup: {err}")
     predictor = None
 
 
 @app.get("/api/health", tags=["System"])
 def get_health() -> Dict[str, Any]:
     """System health check, verifying ML artifact loading and database connectivity."""
+    global predictor
+    if predictor is None or not predictor.is_ready:
+        try:
+            predictor = FreightPredictor.get_instance()
+        except Exception as e:
+            logger.error(f"Health check predictor reload error: {e}")
+
     is_ready = predictor is not None and predictor.is_ready
     db_status = db_instance.get_status()
 
@@ -68,50 +81,33 @@ def get_ports() -> Dict[str, Any]:
     return {"ports": GLOBAL_PORTS}
 
 
-import logging
-logger = logging.getLogger("maritime.main")
-
 @app.post("/api/predict", response_model=ForecastResponse, tags=["Forecasting"])
 def predict_freight(payload: MarketFeaturesInput) -> Dict[str, Any]:
+    """
+    Generate multi-horizon (7D, 14D, 30D) P10/P50/P90 quantile forecast bands
+    for Baltic Dry Index (BDI) directly from the trained Gradient Boosting models.
+    """
     global predictor
-    
-    # Helper function to guarantee safe data structure for the UI
-    def get_fallback():
-        base_bdi = payload.BDI_Close or 1850.0
-        return {
-            "snapshot": payload.model_dump(),
-            "forecasts": {
-                "7D": {"horizon_days": 7, "p10": base_bdi-50, "p50": base_bdi, "p90": base_bdi+50, "expected_change_pct": 0.0, "uncertainty_spread": 100},
-                "14D": {"horizon_days": 14, "p10": base_bdi-100, "p50": base_bdi, "p90": base_bdi+100, "expected_change_pct": 0.0, "uncertainty_spread": 200},
-                "30D": {"horizon_days": 30, "p10": base_bdi-150, "p50": base_bdi, "p90": base_bdi+150, "expected_change_pct": 0.0, "uncertainty_spread": 300}
-            },
-            "trend_analysis": {
-                "current_bdi": base_bdi,
-                "7D_expected_bdi": base_bdi,
-                "30D_expected_bdi": base_bdi,
-                "7D_expected_change_pct": 0.0,
-                "30D_expected_change_pct": 0.0,
-                "market_sentiment": "Neutral / Fallback Mode",
-                "hi5_spread": payload.Bunker_VLSFO - payload.Bunker_IFO380 if payload.Bunker_VLSFO and payload.Bunker_IFO380 else 150.0
-            }
-        }
+    if predictor is None or not predictor.is_ready:
+        try:
+            predictor = FreightPredictor.get_instance()
+        except Exception as e:
+            logger.error(f"Predictor loading error: {traceback.format_exc()}")
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=f"Model predictor failed to initialize: {e}",
+            )
 
     try:
-        # 1. Try to initialize the model if it isn't ready
-        if predictor is None or not predictor.is_ready:
-            predictor = FreightPredictor.get_instance()
-            
-        # 2. Try to run the actual prediction
-        if predictor and predictor.is_ready:
-            features_dict = payload.model_dump()
-            return predictor.predict(features_dict)
-        else:
-            return get_fallback()
-            
+        features_dict = payload.model_dump()
+        result = predictor.predict(features_dict)
+        return result
     except Exception as e:
-        # 3. If anything crashes (shape mismatch, scaler error, etc.), gracefully return fallback
-        logger.error(f"Prediction engine failed: {e}. Returning fallback data.")
-        return get_fallback()
+        logger.error(f"Predictor inference error: {traceback.format_exc()}")
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Prediction error: {str(e)} | Details: {traceback.format_exc()}",
+        )
 
 
 @app.post("/api/optimize", response_model=OptimizeResponse, tags=["Optimization"])
@@ -129,7 +125,8 @@ def optimize_chartering(payload: OptimizeRequest) -> Dict[str, Any]:
             try:
                 preds = predictor.predict(latest)
                 bdi_rate = preds["forecasts"]["30D"]["p50"]
-            except Exception:
+            except Exception as e:
+                logger.warning(f"Optimization forecast inference fallback: {e}")
                 bdi_rate = latest.get("BDI_Close", 1850.0)
         else:
             bdi_rate = latest.get("BDI_Close", 1850.0)
@@ -182,7 +179,7 @@ def stress_test(payload: StressTestRequest) -> Dict[str, Any]:
 
 
 @app.get("/api/history", tags=["History"])
-def get_history(limit: int = 60) -> Dict[str, Any]:
+def get_history(limit: int = 45) -> Dict[str, Any]:
     """
     Retrieve historical market snapshots and saved scenarios.
     """
@@ -211,4 +208,3 @@ def save_scenario(payload: SaveScenarioRequest) -> Dict[str, Any]:
 frontend_dir = Path(__file__).resolve().parent.parent / "frontend"
 if frontend_dir.exists():
     app.mount("/", StaticFiles(directory=str(frontend_dir), html=True), name="frontend")
-

@@ -1,6 +1,6 @@
 /**
  * Maritime Freight Intelligence & Prescriptive Chartering Decision Dashboard
- * Client Application Logic
+ * Client Application Logic - 100% Real ML Pipeline
  */
 
 // Global State
@@ -15,7 +15,7 @@ const state = {
   baselineOpt: null
 };
 
-// API Base URL (handles direct loading or serverless proxy)
+// API Base URL
 const API_BASE = '/api';
 
 // Initialize Dashboard
@@ -79,12 +79,8 @@ function setupEventListeners() {
   const originSelect = document.getElementById('select-origin');
   const destSelect = document.getElementById('select-destination');
   if (originSelect && destSelect) {
-    originSelect.addEventListener('change', () => {
-      checkDraftAlerts();
-    });
-    destSelect.addEventListener('change', () => {
-      checkDraftAlerts();
-    });
+    originSelect.addEventListener('change', checkDraftAlerts);
+    destSelect.addEventListener('change', checkDraftAlerts);
   }
 }
 
@@ -107,14 +103,15 @@ async function checkSystemHealth() {
     const statusText = document.getElementById('system-status-text');
     const badge = document.getElementById('system-status-badge');
 
-    if (data.status === 'healthy') {
-      statusText.innerText = `ML Quantile Models Ready (${data.database.engine.includes('Supabase') ? 'Supabase' : 'Local DB'})`;
+    if (data.status === 'healthy' && data.model_artifacts_loaded) {
+      statusText.innerText = `ML Quantile Models Ready (${data.database.engine})`;
       badge.style.borderColor = 'rgba(16, 185, 129, 0.4)';
     } else {
-      statusText.innerText = 'Models Degraded / Fallback Mode';
+      statusText.innerText = 'ML Models Not Loaded';
+      badge.style.borderColor = 'rgba(255, 77, 109, 0.4)';
     }
   } catch (err) {
-    console.warn('Health check error:', err);
+    console.error('Health check error:', err);
   }
 }
 
@@ -123,14 +120,16 @@ async function loadMarketData() {
     const res = await fetch(`${API_BASE}/history?limit=45`);
     const data = await res.json();
     state.history = data.history || [];
-    state.currentMarket = data.latest_snapshot || {};
+    state.currentMarket = data.latest_snapshot || (state.history.length ? state.history[state.history.length - 1] : {});
     state.savedScenarios = data.saved_scenarios || [];
 
     updateExecutiveKPIs(state.currentMarket);
     renderSavedScenarios(state.savedScenarios);
 
-    // Call /api/predict for current snapshot
-    await fetchForecastCones(state.currentMarket);
+    // Call ML prediction endpoint with actual market features
+    if (state.currentMarket && Object.keys(state.currentMarket).length) {
+      await fetchForecastCones(state.currentMarket);
+    }
   } catch (err) {
     console.error('Failed to load market data:', err);
   }
@@ -139,34 +138,48 @@ async function loadMarketData() {
 function updateExecutiveKPIs(market) {
   if (!market) return;
 
-  const bdiClose = Number(market.BDI_Close) || 1850;
-  const bdi7dMa = Number(market.BDI_7D_MA) || Math.round(bdiClose * 0.995);
-  const bdiVol = Number(market.BDI_30D_Vol) || 28.5;
-  const vlsfo = Number(market.Bunker_VLSFO) || 585.0;
-  const mgo = Number(market.Bunker_MGO) || 760.0;
-  const ifo = Number(market.Bunker_IFO380) || 430.0;
+  const bdiClose = Number(market.BDI_Close);
+  const bdi7dMa = Number(market.BDI_7D_MA) || bdiClose;
+  const bdiVol = Number(market.BDI_30D_Vol) || 0.0;
+  const vlsfo = Number(market.Bunker_VLSFO);
+  const mgo = Number(market.Bunker_MGO);
+  const ifo = Number(market.Bunker_IFO380);
   const hi5 = Number(market.Hi5_Spread) || (vlsfo - ifo);
 
-  document.getElementById('kpi-bdi-val').innerText = Number(bdiClose).toLocaleString();
-  document.getElementById('kpi-bdi-7dma').innerText = Number(bdi7dMa).toLocaleString();
-  document.getElementById('kpi-bdi-vol').innerText = Number(bdiVol).toFixed(1);
+  if (!isNaN(bdiClose)) {
+    document.getElementById('kpi-bdi-val').innerText = bdiClose.toLocaleString();
+  }
+  if (!isNaN(bdi7dMa)) {
+    document.getElementById('kpi-bdi-7dma').innerText = Math.round(bdi7dMa).toLocaleString();
+  }
+  if (!isNaN(bdiVol)) {
+    document.getElementById('kpi-bdi-vol').innerText = bdiVol.toFixed(1);
+  }
 
-  document.getElementById('kpi-vlsfo-val').innerText = `$${Number(vlsfo).toFixed(2)}`;
-  document.getElementById('kpi-mgo-val').innerText = `$${Number(mgo).toFixed(2)}`;
-  document.getElementById('kpi-ifo-val').innerText = `$${Number(ifo).toFixed(2)}`;
-  document.getElementById('kpi-hi5-badge').innerText = `Hi5: $${Number(hi5).toFixed(0)}/MT`;
+  if (!isNaN(vlsfo)) {
+    document.getElementById('kpi-vlsfo-val').innerText = `$${vlsfo.toFixed(2)}`;
+  }
+  if (!isNaN(mgo)) {
+    document.getElementById('kpi-mgo-val').innerText = `$${mgo.toFixed(2)}`;
+  }
+  if (!isNaN(ifo)) {
+    document.getElementById('kpi-ifo-val').innerText = `$${ifo.toFixed(2)}`;
+  }
+  if (!isNaN(hi5)) {
+    document.getElementById('kpi-hi5-badge').innerText = `Hi5: $${Math.round(hi5)}/MT`;
+  }
 }
 
 async function fetchForecastCones(marketSnapshot) {
   try {
     const payload = {
-      BDI_Close: Number(marketSnapshot.BDI_Close) || 1850,
-      BDI_Open: marketSnapshot.BDI_Open ? Number(marketSnapshot.BDI_Open) : undefined,
-      BDI_High: marketSnapshot.BDI_High ? Number(marketSnapshot.BDI_High) : undefined,
-      BDI_Low: marketSnapshot.BDI_Low ? Number(marketSnapshot.BDI_Low) : undefined,
-      Bunker_VLSFO: Number(marketSnapshot.Bunker_VLSFO) || 585,
-      Bunker_MGO: Number(marketSnapshot.Bunker_MGO) || 760,
-      Bunker_IFO380: Number(marketSnapshot.Bunker_IFO380) || 430,
+      BDI_Close: Number(marketSnapshot.BDI_Close),
+      BDI_Open: marketSnapshot.BDI_Open != null ? Number(marketSnapshot.BDI_Open) : undefined,
+      BDI_High: marketSnapshot.BDI_High != null ? Number(marketSnapshot.BDI_High) : undefined,
+      BDI_Low: marketSnapshot.BDI_Low != null ? Number(marketSnapshot.BDI_Low) : undefined,
+      Bunker_VLSFO: Number(marketSnapshot.Bunker_VLSFO),
+      Bunker_MGO: marketSnapshot.Bunker_MGO != null ? Number(marketSnapshot.Bunker_MGO) : undefined,
+      Bunker_IFO380: marketSnapshot.Bunker_IFO380 != null ? Number(marketSnapshot.Bunker_IFO380) : undefined,
     };
 
     const res = await fetch(`${API_BASE}/predict`, {
@@ -175,15 +188,21 @@ async function fetchForecastCones(marketSnapshot) {
       body: JSON.stringify(payload),
     });
 
+    if (!res.ok) {
+      const errDetail = await res.text();
+      console.error('Prediction API Error:', res.status, errDetail);
+      return;
+    }
+
     const data = await res.json();
     state.forecasts = data.forecasts;
 
-    // Update 30D Forecast KPI Card & Stats Strip
+    // Update 30D Forecast KPI Card & Stats Strip with real ML forecast outputs
     const f30 = state.forecasts && state.forecasts['30D'];
     if (f30) {
-      document.getElementById('kpi-forecast-p50').innerText = Math.round(f30.p50).toLocaleString();
-      document.getElementById('kpi-forecast-p10').innerText = Math.round(f30.p10).toLocaleString();
-      document.getElementById('kpi-forecast-p90').innerText = Math.round(f30.p90).toLocaleString();
+      document.getElementById('kpi-forecast-p50').innerText = Math.round(Number(f30.p50)).toLocaleString();
+      document.getElementById('kpi-forecast-p10').innerText = Math.round(Number(f30.p10)).toLocaleString();
+      document.getElementById('kpi-forecast-p90').innerText = Math.round(Number(f30.p90)).toLocaleString();
 
       const sentimentBadge = document.getElementById('kpi-sentiment-badge');
       if (sentimentBadge && data.trend_analysis) {
@@ -198,19 +217,19 @@ async function fetchForecastCones(marketSnapshot) {
         }
       }
 
-      // Update Forecast Stats Strip below chart
+      // Update Strip below chart
       const stripP10 = document.getElementById('strip-p10');
       const stripP50 = document.getElementById('strip-p50');
       const stripP90 = document.getElementById('strip-p90');
 
-      if (stripP10) stripP10.innerText = `${Math.round(f30.p10).toLocaleString()} pts`;
-      if (stripP50) stripP50.innerText = `${Math.round(f30.p50).toLocaleString()} pts`;
-      if (stripP90) stripP90.innerText = `${Math.round(f30.p90).toLocaleString()} pts`;
+      if (stripP10) stripP10.innerText = `${Math.round(Number(f30.p10)).toLocaleString()} pts`;
+      if (stripP50) stripP50.innerText = `${Math.round(Number(f30.p50)).toLocaleString()} pts`;
+      if (stripP90) stripP90.innerText = `${Math.round(Number(f30.p90)).toLocaleString()} pts`;
     }
 
     renderForecastChart();
   } catch (err) {
-    console.error('Error fetching forecasts:', err);
+    console.error('Error in fetchForecastCones:', err);
   }
 }
 
@@ -227,26 +246,9 @@ function renderForecastChart() {
     return;
   }
 
-  // FORCE FALLBACK DATA IF STATE IS EMPTY TO PREVENT BLANK CANVAS
-  let histToUse = state.history;
-  if (!histToUse || !histToUse.length) {
-    console.warn('History state empty. Forcing visual baseline.');
-    const today = new Date();
-    histToUse = Array.from({length: 10}, (_, i) => {
-      const d = new Date(today);
-      d.setDate(d.getDate() - (9 - i));
-      return { date: d.toISOString().split('T')[0], BDI_Close: 1850 };
-    });
-  }
-
-  let forecastsToUse = state.forecasts;
-  if (!forecastsToUse || !forecastsToUse['30D']) {
-    console.warn('Forecast state empty. Forcing visual baseline.');
-    forecastsToUse = {
-      '7D': { p10: 1800, p50: 1850, p90: 1900 },
-      '14D': { p10: 1750, p50: 1850, p90: 1950 },
-      '30D': { p10: 1700, p50: 1850, p90: 2000 }
-    };
+  if (!state.history || !state.history.length || !state.forecasts) {
+    console.warn('Chart waiting for data...', { historyLen: state.history?.length, hasForecasts: !!state.forecasts });
+    return;
   }
 
   const ctx = canvas.getContext('2d');
@@ -255,21 +257,21 @@ function renderForecastChart() {
   }
 
   try {
-    // 1. Build historical labels & data points
-    const histLabels = histToUse.map(h => {
+    // 1. Map real historical dates & Close prices from feature store
+    const histLabels = state.history.map(h => {
       if (!h.date) return '';
       return String(h.date).slice(5); // 'MM-DD'
     });
 
-    const lastDateStr = histToUse[histToUse.length - 1]?.date || '2026-08-30';
+    const lastDateStr = state.history[state.history.length - 1]?.date || '2026-08-30';
     let lastDate = new Date(lastDateStr);
     if (isNaN(lastDate.getTime())) {
       lastDate = new Date();
     }
 
-    const baseBdi = Number(state.currentMarket?.BDI_Close) || Number(histToUse[histToUse.length - 1]?.BDI_Close) || 1850;
+    const baseBdi = Number(state.currentMarket?.BDI_Close) || Number(state.history[state.history.length - 1]?.BDI_Close) || 1850;
 
-    // 2. Build forecast projection date labels
+    // 2. Generate future dates for 7D, 14D, 30D
     const date7 = new Date(lastDate.getTime() + 7 * 86400000);
     const date14 = new Date(lastDate.getTime() + 14 * 86400000);
     const date30 = new Date(lastDate.getTime() + 30 * 86400000);
@@ -289,47 +291,48 @@ function renderForecastChart() {
     const lastHistIndex = histLabels.length - 1;
 
     // 3. Historical series
-    const histData = histToUse.map(h => Number(h.BDI_Close));
+    const histData = state.history.map(h => Number(h.BDI_Close));
     const paddedHist = new Array(allLabels.length).fill(null);
     for (let i = 0; i <= lastHistIndex; i++) {
       paddedHist[i] = histData[i];
     }
 
-    // 4. Quantile projections starting exactly from the last historical point
+    // 4. Quantile projections starting exactly at last historical date
     const p10Data = new Array(allLabels.length).fill(null);
     const p50Data = new Array(allLabels.length).fill(null);
     const p90Data = new Array(allLabels.length).fill(null);
 
-    // Anchor at last historical day
     p10Data[lastHistIndex] = baseBdi;
     p50Data[lastHistIndex] = baseBdi;
     p90Data[lastHistIndex] = baseBdi;
 
     // 7D Horizon
-    if (forecastsToUse['7D']) {
-      p10Data[lastHistIndex + 1] = Number(forecastsToUse['7D'].p10);
-      p50Data[lastHistIndex + 1] = Number(forecastsToUse['7D'].p50);
-      p90Data[lastHistIndex + 1] = Number(forecastsToUse['7D'].p90);
+    if (state.forecasts['7D']) {
+      p10Data[lastHistIndex + 1] = Number(state.forecasts['7D'].p10);
+      p50Data[lastHistIndex + 1] = Number(state.forecasts['7D'].p50);
+      p90Data[lastHistIndex + 1] = Number(state.forecasts['7D'].p90);
     }
 
     // 14D Horizon
-    if (state.selectedHorizon !== '7' && forecastsToUse['14D']) {
-      p10Data[lastHistIndex + 2] = Number(forecastsToUse['14D'].p10);
-      p50Data[lastHistIndex + 2] = Number(forecastsToUse['14D'].p50);
-      p90Data[lastHistIndex + 2] = Number(forecastsToUse['14D'].p90);
+    if (state.selectedHorizon !== '7' && state.forecasts['14D']) {
+      p10Data[lastHistIndex + 2] = Number(state.forecasts['14D'].p10);
+      p50Data[lastHistIndex + 2] = Number(state.forecasts['14D'].p50);
+      p90Data[lastHistIndex + 2] = Number(state.forecasts['14D'].p90);
     }
 
     // 30D Horizon
     if (state.selectedHorizon === 'all' || state.selectedHorizon === '30') {
       const idx30 = state.selectedHorizon === '30' ? lastHistIndex + 1 : lastHistIndex + 3;
-      if (forecastsToUse['30D']) {
-        p10Data[idx30] = Number(forecastsToUse['30D'].p10);
-        p50Data[idx30] = Number(forecastsToUse['30D'].p50);
-        p90Data[idx30] = Number(forecastsToUse['30D'].p90);
+      if (state.forecasts['30D']) {
+        p10Data[idx30] = Number(state.forecasts['30D'].p10);
+        p50Data[idx30] = Number(state.forecasts['30D'].p50);
+        p90Data[idx30] = Number(state.forecasts['30D'].p90);
       }
     }
 
-    // 5. Render Chart.js with safe filling & spanGaps enabled
+    console.log("Chart Data:", allLabels, paddedHist, p50Data);
+
+    // 5. Render Chart.js with clean quantile corridor and lines
     state.chartInstance = new Chart(ctx, {
       type: 'line',
       data: {
@@ -432,7 +435,7 @@ function renderForecastChart() {
       }
     });
   } catch (chartErr) {
-    console.error('Error in renderForecastChart:', chartErr);
+    console.error('Error rendering Forecast Chart:', chartErr);
   }
 }
 
@@ -448,7 +451,7 @@ async function runCharterOptimization() {
   const draftVal = parseFloat(document.getElementById('input-draft').value) || null;
 
   const btn = document.getElementById('btn-optimize');
-  if (btn) btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Solving MILP Optimization...';
+  if (btn) btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Solving Fleet Optimization...';
 
   try {
     const payload = {
