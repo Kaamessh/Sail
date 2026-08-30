@@ -30,13 +30,20 @@ async function apiFetch(endpoint, options = {}) {
   }
 }
 
-// Initialize Dashboard
-document.addEventListener('DOMContentLoaded', async () => {
+// Self-executing initialization that handles already-loaded or async DOM states
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', initApp);
+} else {
+  initApp();
+}
+
+async function initApp() {
+  console.log("Initializing Aura Maritime Dashboard...");
   setupEventListeners();
   await checkSystemHealth();
   await loadMarketData();
   await triggerDefaultOptimization();
-});
+}
 
 function setupEventListeners() {
   // Horizon Tabs

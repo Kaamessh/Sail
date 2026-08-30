@@ -51,7 +51,7 @@ class OptimizeRequest(BaseModel):
     destination_port: str = Field(..., description="Destination / Discharge Port Name")
     laycan_start: Optional[str] = Field(None, description="Laycan window start date (YYYY-MM-DD)")
     laycan_end: Optional[str] = Field(None, description="Laycan window end date (YYYY-MM-DD)")
-    custom_max_draft: Optional[float] = Field(None, description="Custom permissible draft restriction (meters)", ge=5.0, le=30.0)
+    custom_max_draft: Optional[float] = Field(None, description="Custom permissible draft restriction (meters)", ge=1.0, le=40.0)
     bdi_forecast_override: Optional[float] = Field(None, description="Optional custom BDI rate override")
     vlsfo_price_override: Optional[float] = Field(None, description="Optional custom VLSFO $/MT price override")
     mgo_price_override: Optional[float] = Field(None, description="Optional custom MGO $/MT price override")
