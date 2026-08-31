@@ -241,6 +241,63 @@ def save_scenario(payload: SaveScenarioRequest) -> Dict[str, Any]:
     return {"status": "saved", "scenario": saved}
 
 
+@api_router.post("/sync-market", tags=["Data Ingestion"])
+def sync_market_data() -> Dict[str, Any]:
+    """
+    Trigger live daily scraping of BDI and Bunker prices, calculate
+    derived rolling indicators, and upsert into the feature store.
+    """
+    from backend.scraper import MarketDataScraper
+
+    raw_snapshot = MarketDataScraper.get_daily_snapshot()
+    latest_known = db_instance.get_latest_market_snapshot()
+
+    bdi_close = raw_snapshot.get("BDI_Close") or float(latest_known.get("BDI_Close", 1850.0))
+    vlsfo = raw_snapshot.get("Bunker_VLSFO") or float(latest_known.get("Bunker_VLSFO", 585.0))
+    ifo = raw_snapshot.get("Bunker_IFO380") or float(latest_known.get("Bunker_IFO380", 430.0))
+    mgo = raw_snapshot.get("Bunker_MGO") or float(latest_known.get("Bunker_MGO", 760.0))
+
+    # Retrieve recent history to calculate rolling technical indicators
+    history = db_instance.get_market_history(limit=30)
+    past_closes = [float(h["BDI_Close"]) for h in history if "BDI_Close" in h] + [bdi_close]
+
+    slice_7d = past_closes[-7:]
+    ma_7d = round(sum(slice_7d) / len(slice_7d), 2)
+
+    slice_14d = past_closes[-14:]
+    ma_14d = round(sum(slice_14d) / len(slice_14d), 2)
+
+    slice_30d = past_closes[-30:]
+    mean_30 = sum(slice_30d) / len(slice_30d)
+    var_30 = sum((x - mean_30) ** 2 for x in slice_30d) / max(1, len(slice_30d))
+    vol_30d = round(var_30 ** 0.5, 2)
+
+    enriched_snapshot = {
+        "id": f"rec-{raw_snapshot['date']}",
+        "date": raw_snapshot["date"],
+        "BDI_Close": bdi_close,
+        "BDI_Open": raw_snapshot.get("BDI_Open", bdi_close),
+        "BDI_High": raw_snapshot.get("BDI_High", bdi_close),
+        "BDI_Low": raw_snapshot.get("BDI_Low", bdi_close),
+        "Bunker_VLSFO": vlsfo,
+        "Bunker_MGO": mgo,
+        "Bunker_IFO380": ifo,
+        "Hi5_Spread": round(vlsfo - ifo, 2),
+        "BDI_7D_MA": ma_7d,
+        "BDI_14D_MA": ma_14d,
+        "BDI_30D_Vol": vol_30d,
+    }
+
+    saved_record = db_instance.save_market_entry(enriched_snapshot)
+    logger.info(f"Market snapshot synced successfully: {saved_record['date']} BDI={bdi_close}")
+
+    return {
+        "status": "success",
+        "message": "Market snapshot ingested and technical features computed.",
+        "record": saved_record,
+    }
+
+
 # Mount API routes at both /api and root
 app.include_router(api_router, prefix="/api")
 app.include_router(api_router, prefix="")

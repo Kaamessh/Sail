@@ -93,11 +93,16 @@ function setupEventListeners() {
     draftInput.addEventListener('input', () => { runCharterOptimization(); });
   }
 
-  // Refresh Market Data Button
+  // Refresh Market Data Button (Live Ingestion & Sync)
   const btnRefresh = document.getElementById('btn-refresh-market');
   if (btnRefresh) {
     btnRefresh.addEventListener('click', async () => {
-      btnRefresh.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Syncing...';
+      btnRefresh.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Ingesting Live Data...';
+      try {
+        await apiFetch('/sync-market', { method: 'POST' });
+      } catch (e) {
+        console.warn('Sync market trigger warning:', e);
+      }
       await loadMarketData();
       await runCharterOptimization();
       btnRefresh.innerHTML = '<i class="fa-solid fa-rotate"></i> Sync Market';

@@ -19,5 +19,11 @@
       "src": "/(.*)",
       "dest": "frontend/$1"
     }
+  ],
+  "crons": [
+    {
+      "path": "/api/sync-market",
+      "schedule": "0 6 * * *"
+    }
   ]
 }
