@@ -164,17 +164,34 @@ class FreightPredictor:
         raise FileNotFoundError(error_msg)
 
     def load_artifacts(self, artifacts_dir: Optional[Union[str, Path]] = None) -> None:
-        """Load joblib models, scalers, and metadata from Supabase Storage or local path."""
+        """
+        Load joblib models, scalers, and metadata with zero-latency local resolution first,
+        falling back to cloud storage sync only if local bundle files are missing.
+        """
         try:
-            # Check Supabase Storage bucket sync first
-            download_dir = Path(tempfile.gettempdir()) / "maritime_model_artifacts"
-            synced = self._sync_artifacts_from_supabase(download_dir)
+            models_path: Optional[Path] = None
+            scalers_path: Optional[Path] = None
+            metadata_path: Optional[Path] = None
 
-            search_dir = download_dir if synced else artifacts_dir
+            # 1. First priority: Aggressive zero-latency local filesystem resolution
+            try:
+                models_path = self._locate_artifact_path("freight_quantile_models.joblib", artifacts_dir)
+                scalers_path = self._locate_artifact_path("freight_scalers.joblib", artifacts_dir)
+                metadata_path = self._locate_artifact_path("metadata.json", artifacts_dir)
+            except FileNotFoundError:
+                logger.info("Local artifact weights missing in deployment bundle. Attempting Supabase Storage sync...")
 
-            models_path = self._locate_artifact_path("freight_quantile_models.joblib", search_dir)
-            scalers_path = self._locate_artifact_path("freight_scalers.joblib", search_dir)
-            metadata_path = self._locate_artifact_path("metadata.json", search_dir)
+            # 2. Second priority: Fallback to Supabase Storage if local artifacts not found
+            if not models_path or not scalers_path or not metadata_path:
+                download_dir = Path(tempfile.gettempdir()) / "maritime_model_artifacts"
+                synced = self._sync_artifacts_from_supabase(download_dir)
+                if synced:
+                    models_path = self._locate_artifact_path("freight_quantile_models.joblib", download_dir)
+                    scalers_path = self._locate_artifact_path("freight_scalers.joblib", download_dir)
+                    metadata_path = self._locate_artifact_path("metadata.json", download_dir)
+
+            if not models_path or not scalers_path or not metadata_path:
+                raise FileNotFoundError("Could not resolve model artifacts locally or via cloud storage sync.")
 
             logger.info(f"Loading freight models from: {models_path}")
             self._models = joblib.load(models_path)

@@ -1,6 +1,6 @@
 /**
  * Maritime Freight Intelligence & Prescriptive Chartering Decision Dashboard
- * Client Application Logic - 100% Genuine ML Pipeline
+ * Client Application Logic - 100% Genuine ML Pipeline with Resilient Async Fetching
  */
 
 // Global State
@@ -15,18 +15,34 @@ const state = {
   baselineOpt: null
 };
 
-// Robust API fetch helper resolving both /api and root endpoints
-async function apiFetch(endpoint, options = {}) {
+// Robust API fetch helper with 5-second AbortController timeout & dual prefix resolution
+async function apiFetch(endpoint, options = {}, timeoutMs = 5000) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  const fetchOptions = { ...options, signal: controller.signal };
+
   try {
-    const res = await fetch(`/api${endpoint}`, options);
+    const res = await fetch(`/api${endpoint}`, fetchOptions);
+    clearTimeout(timeoutId);
     if (res.ok) return res;
     if (res.status === 404) {
-      const resFallback = await fetch(endpoint, options);
+      const fallbackController = new AbortController();
+      const fallbackTimeoutId = setTimeout(() => fallbackController.abort(), timeoutMs);
+      const resFallback = await fetch(endpoint, { ...options, signal: fallbackController.signal });
+      clearTimeout(fallbackTimeoutId);
       if (resFallback.ok) return resFallback;
     }
     return res;
   } catch (err) {
-    return await fetch(endpoint, options);
+    clearTimeout(timeoutId);
+    if (err.name === 'AbortError') {
+      console.warn(`Request to ${endpoint} timed out after ${timeoutMs}ms.`);
+    }
+    try {
+      return await fetch(endpoint, options);
+    } catch (fallbackErr) {
+      throw fallbackErr;
+    }
   }
 }
 
@@ -40,9 +56,13 @@ if (document.readyState === 'loading') {
 async function initApp() {
   console.log("Initializing Aura Maritime Dashboard...");
   setupEventListeners();
-  await checkSystemHealth();
-  await loadMarketData();
-  await triggerDefaultOptimization();
+
+  // Execute initialization tasks without blocking the UI
+  await Promise.allSettled([
+    checkSystemHealth(),
+    loadMarketData(),
+    triggerDefaultOptimization()
+  ]);
 }
 
 function setupEventListeners() {
@@ -128,10 +148,11 @@ function setupEventListeners() {
 }
 
 function checkDraftAlerts() {
-  const origin = document.getElementById('select-origin').value;
-  const dest = document.getElementById('select-destination').value;
+  const origin = document.getElementById('select-origin')?.value;
+  const dest = document.getElementById('select-destination')?.value;
   const draftInput = document.getElementById('input-draft');
 
+  if (!draftInput) return;
   if (origin === 'Haldia' || dest === 'Haldia') {
     draftInput.placeholder = '8.5m (Haldia Restricted)';
   } else {
@@ -140,30 +161,36 @@ function checkDraftAlerts() {
 }
 
 async function checkSystemHealth() {
+  const statusText = document.getElementById('system-status-text');
+  const badge = document.getElementById('system-status-badge');
+
   try {
     const res = await apiFetch('/health');
+    if (!res || !res.ok) {
+      throw new Error(`Health check returned HTTP ${res?.status}`);
+    }
     const data = await res.json();
-    const statusText = document.getElementById('system-status-text');
-    const badge = document.getElementById('system-status-badge');
 
     if (data.status === 'healthy' && data.model_artifacts_loaded) {
-      statusText.innerText = `ML Models Online (7D, 14D, 30D)`;
-      badge.style.borderColor = 'rgba(16, 185, 129, 0.4)';
+      if (statusText) statusText.innerText = `ML Models Online (7D, 14D, 30D)`;
+      if (badge) badge.style.borderColor = 'rgba(16, 185, 129, 0.4)';
     } else {
-      statusText.innerText = 'ML Models Degraded / Offline';
-      badge.style.borderColor = 'rgba(255, 77, 109, 0.4)';
-      console.error('CRITICAL: Health check returned degraded model status:', data);
+      if (statusText) statusText.innerText = 'ML Models Degraded';
+      if (badge) badge.style.borderColor = 'rgba(255, 77, 109, 0.4)';
+      console.error('Health check returned degraded model status:', data);
     }
   } catch (err) {
-    console.error('CRITICAL: Health check failed to connect:', err);
+    console.warn('Health check failed to connect:', err);
+    if (statusText) statusText.innerText = 'ML Offline / Reconnecting';
+    if (badge) badge.style.borderColor = 'rgba(255, 77, 109, 0.4)';
   }
 }
 
 async function loadMarketData() {
   try {
     const res = await apiFetch('/history?limit=45');
-    if (!res.ok) {
-      throw new Error(`Failed to fetch market history: HTTP ${res.status}`);
+    if (!res || !res.ok) {
+      throw new Error(`Failed to fetch market history: HTTP ${res?.status}`);
     }
     const data = await res.json();
     state.history = data.history || [];
@@ -180,7 +207,7 @@ async function loadMarketData() {
     // Run ML prediction with real current market values
     await fetchForecastCones(state.currentMarket);
   } catch (err) {
-    console.error('FATAL: loadMarketData failed:', err);
+    console.error('loadMarketData notice:', err);
   }
 }
 
@@ -196,26 +223,33 @@ function updateExecutiveKPIs(market) {
   const hi5 = Number(market.Hi5_Spread);
 
   if (!isNaN(bdiClose)) {
-    document.getElementById('kpi-bdi-val').innerText = bdiClose.toLocaleString();
+    const el = document.getElementById('kpi-bdi-val');
+    if (el) el.innerText = bdiClose.toLocaleString();
   }
   if (!isNaN(bdi7dMa)) {
-    document.getElementById('kpi-bdi-7dma').innerText = Math.round(bdi7dMa).toLocaleString();
+    const el = document.getElementById('kpi-bdi-7dma');
+    if (el) el.innerText = Math.round(bdi7dMa).toLocaleString();
   }
   if (!isNaN(bdiVol)) {
-    document.getElementById('kpi-bdi-vol').innerText = bdiVol.toFixed(1);
+    const el = document.getElementById('kpi-bdi-vol');
+    if (el) el.innerText = bdiVol.toFixed(1);
   }
 
   if (!isNaN(vlsfo)) {
-    document.getElementById('kpi-vlsfo-val').innerText = `$${vlsfo.toFixed(2)}`;
+    const el = document.getElementById('kpi-vlsfo-val');
+    if (el) el.innerText = `$${vlsfo.toFixed(2)}`;
   }
   if (!isNaN(mgo)) {
-    document.getElementById('kpi-mgo-val').innerText = `$${mgo.toFixed(2)}`;
+    const el = document.getElementById('kpi-mgo-val');
+    if (el) el.innerText = `$${mgo.toFixed(2)}`;
   }
   if (!isNaN(ifo)) {
-    document.getElementById('kpi-ifo-val').innerText = `$${ifo.toFixed(2)}`;
+    const el = document.getElementById('kpi-ifo-val');
+    if (el) el.innerText = `$${ifo.toFixed(2)}`;
   }
   if (!isNaN(hi5)) {
-    document.getElementById('kpi-hi5-badge').innerText = `Hi5: $${Math.round(hi5)}/MT`;
+    const el = document.getElementById('kpi-hi5-badge');
+    if (el) el.innerText = `Hi5: $${Math.round(hi5)}/MT`;
   }
 }
 
@@ -241,22 +275,24 @@ async function fetchForecastCones(marketSnapshot) {
       body: JSON.stringify(payload),
     });
 
-    if (!res.ok) {
-      const errDetail = await res.text();
-      throw new Error(`Prediction API HTTP ${res.status}: ${errDetail}`);
+    if (!res || !res.ok) {
+      const errDetail = res ? await res.text() : 'No response';
+      throw new Error(`Prediction API HTTP ${res?.status}: ${errDetail}`);
     }
 
     const data = await res.json();
-    console.log("API Forecast Payload:", data);
-
     state.forecasts = data.forecasts;
 
     // Update 30D Forecast KPI Card & Stats Strip with real ML forecast outputs
     const f30 = state.forecasts['30D'];
     if (f30) {
-      document.getElementById('kpi-forecast-p50').innerText = Math.round(Number(f30.p50)).toLocaleString();
-      document.getElementById('kpi-forecast-p10').innerText = Math.round(Number(f30.p10)).toLocaleString();
-      document.getElementById('kpi-forecast-p90').innerText = Math.round(Number(f30.p90)).toLocaleString();
+      const p50El = document.getElementById('kpi-forecast-p50');
+      const p10El = document.getElementById('kpi-forecast-p10');
+      const p90El = document.getElementById('kpi-forecast-p90');
+
+      if (p50El) p50El.innerText = Math.round(Number(f30.p50)).toLocaleString();
+      if (p10El) p10El.innerText = Math.round(Number(f30.p10)).toLocaleString();
+      if (p90El) p90El.innerText = Math.round(Number(f30.p90)).toLocaleString();
 
       const sentimentBadge = document.getElementById('kpi-sentiment-badge');
       if (sentimentBadge && data.trend_analysis) {
@@ -283,28 +319,20 @@ async function fetchForecastCones(marketSnapshot) {
 
     renderForecastChart();
   } catch (err) {
-    console.error('CRITICAL: fetchForecastCones failed:', err);
+    console.error('fetchForecastCones warning:', err);
   }
 }
 
 function renderForecastChart() {
   const canvas = document.getElementById('forecastChart');
-  if (!canvas) {
-    console.error("Canvas element 'forecastChart' not found in DOM.");
-    return;
-  }
+  if (!canvas) return;
 
   if (typeof Chart === 'undefined') {
-    console.warn('Chart.js not yet loaded, retrying in 250ms...');
     setTimeout(renderForecastChart, 250);
     return;
   }
 
   if (!state.history || !state.history.length || !state.forecasts) {
-    console.error('FATAL: Cannot render forecast chart - state data missing.', {
-      historyLen: state.history?.length,
-      hasForecasts: !!state.forecasts
-    });
     return;
   }
 
@@ -314,13 +342,11 @@ function renderForecastChart() {
   }
 
   try {
-    // 1. Map real historical dates & Close prices from feature store
     const histLabels = state.history.map(h => String(h.date).slice(5));
     const lastDateStr = state.history[state.history.length - 1].date;
     const lastDate = new Date(lastDateStr);
     const baseBdi = Number(state.history[state.history.length - 1].BDI_Close);
 
-    // 2. Generate future dates for 7D, 14D, 30D
     const date7 = new Date(lastDate.getTime() + 7 * 86400000);
     const date14 = new Date(lastDate.getTime() + 14 * 86400000);
     const date30 = new Date(lastDate.getTime() + 30 * 86400000);
@@ -339,14 +365,12 @@ function renderForecastChart() {
     const allLabels = [...histLabels, ...forecastLabels];
     const lastHistIndex = histLabels.length - 1;
 
-    // 3. Historical series
     const histData = state.history.map(h => Number(h.BDI_Close));
     const paddedHist = new Array(allLabels.length).fill(null);
     for (let i = 0; i <= lastHistIndex; i++) {
       paddedHist[i] = histData[i];
     }
 
-    // 4. Quantile projections starting exactly at last historical date
     const p10Data = new Array(allLabels.length).fill(null);
     const p50Data = new Array(allLabels.length).fill(null);
     const p90Data = new Array(allLabels.length).fill(null);
@@ -355,21 +379,18 @@ function renderForecastChart() {
     p50Data[lastHistIndex] = baseBdi;
     p90Data[lastHistIndex] = baseBdi;
 
-    // 7D Horizon
     if (state.forecasts['7D']) {
       p10Data[lastHistIndex + 1] = Number(state.forecasts['7D'].p10);
       p50Data[lastHistIndex + 1] = Number(state.forecasts['7D'].p50);
       p90Data[lastHistIndex + 1] = Number(state.forecasts['7D'].p90);
     }
 
-    // 14D Horizon
     if (state.selectedHorizon !== '7' && state.forecasts['14D']) {
       p10Data[lastHistIndex + 2] = Number(state.forecasts['14D'].p10);
       p50Data[lastHistIndex + 2] = Number(state.forecasts['14D'].p50);
       p90Data[lastHistIndex + 2] = Number(state.forecasts['14D'].p90);
     }
 
-    // 30D Horizon
     if (state.selectedHorizon === 'all' || state.selectedHorizon === '30') {
       const idx30 = state.selectedHorizon === '30' ? lastHistIndex + 1 : lastHistIndex + 3;
       if (state.forecasts['30D']) {
@@ -379,9 +400,6 @@ function renderForecastChart() {
       }
     }
 
-    console.log("Chart Data:", allLabels, paddedHist, p50Data);
-
-    // 5. Render Chart.js
     state.chartInstance = new Chart(ctx, {
       type: 'line',
       data: {
@@ -484,7 +502,7 @@ function renderForecastChart() {
       }
     });
   } catch (chartErr) {
-    console.error('CRITICAL: Error rendering Forecast Chart:', chartErr);
+    console.error('Error rendering Forecast Chart:', chartErr);
   }
 }
 
@@ -519,8 +537,8 @@ async function runCharterOptimization() {
       body: JSON.stringify(payload),
     });
 
-    if (!res.ok) {
-      throw new Error(`Optimization API HTTP ${res.status}`);
+    if (!res || !res.ok) {
+      throw new Error(`Optimization API HTTP ${res?.status}`);
     }
 
     const data = await res.json();
@@ -530,7 +548,13 @@ async function runCharterOptimization() {
     renderOptimizationResults(data);
     updateStressTestResults();
   } catch (err) {
-    console.error('Optimization request failed:', err);
+    console.warn('Optimization calculation notice:', err);
+    const recVessel = document.getElementById('rec-vessel-name');
+    const recSummary = document.getElementById('rec-summary-text');
+    if (recVessel && recVessel.innerText.includes('Evaluating')) {
+      recVessel.innerText = 'SERVICE RECONNECTING';
+      if (recSummary) recSummary.innerText = 'Reconnecting to fleet solver... Click evaluate to calculate.';
+    }
   } finally {
     if (btn) btn.innerHTML = '<i class="fa-solid fa-wand-magic-sparkles"></i> Evaluate Optimal Fleet Allocation';
   }
@@ -605,10 +629,12 @@ function updateStressTestResults() {
   const adjVlsfo = baseVlsfo * (1 + bunkerPct / 100);
   const adjBdi = baseBdi * (1 + bdiPct / 100);
 
-  document.getElementById('slider-bunker-val').innerText = `${bunkerPct >= 0 ? '+' : ''}${bunkerPct}% ($${adjVlsfo.toFixed(0)}/MT)`;
-  document.getElementById('slider-bdi-val').innerText = `${bdiPct >= 0 ? '+' : ''}${bdiPct}% (${Math.round(adjBdi)} pts)`;
+  const bunkerValEl = document.getElementById('slider-bunker-val');
+  const bdiValEl = document.getElementById('slider-bdi-val');
 
-  // Recalculate landed cost for Capesize, Panamax, Supramax
+  if (bunkerValEl) bunkerValEl.innerText = `${bunkerPct >= 0 ? '+' : ''}${bunkerPct}% ($${adjVlsfo.toFixed(0)}/MT)`;
+  if (bdiValEl) bdiValEl.innerText = `${bdiPct >= 0 ? '+' : ''}${bdiPct}% (${Math.round(adjBdi)} pts)`;
+
   state.baselineOpt.vessel_options.forEach(v => {
     const fuelCostPerTonne = (v.vlsfo_consumption_mt * adjVlsfo + v.mgo_consumption_mt * 760) / v.cargo_tonnes;
     const hireDaily = adjBdi * (v.vessel_class === 'Capesize' ? 13.8 : (v.vessel_class === 'Panamax' ? 8.5 : 7.2));
