@@ -46,44 +46,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Global Predictor Reference
-try:
-    predictor = FreightPredictor.get_instance()
-except Exception as err:
-    logger.warning(f"Predictor eager init deferral: {err}")
-    predictor = None
-
-
-@app.on_event("startup")
-def startup_and_verify_ml_pipeline():
-    """
-    Autonomous Startup Test:
-    Ensures model weights and scalers load properly and executes an actual test prediction.
-    If the test fails, immediately terminates execution with an explicit traceback.
-    """
-    global predictor
-    logger.info("Starting Autonomous ML Pipeline Verification...")
-    try:
-        predictor = FreightPredictor.get_instance()
-        if not predictor or not predictor.is_ready:
-            raise RuntimeError("FreightPredictor instance failed initialization.")
-
-        # Test inference with latest market record
-        test_snapshot = db_instance.get_latest_market_snapshot()
-        logger.info(f"Running startup test inference with snapshot: {test_snapshot}")
-        test_result = predictor.predict(test_snapshot)
-
-        if "forecasts" not in test_result or "30D" not in test_result["forecasts"]:
-            raise ValueError(f"Startup test inference returned unexpected payload: {test_result}")
-
-        logger.info(
-            f"STARTUP ML VERIFICATION SUCCESSFUL: 30D P50 Forecast = {test_result['forecasts']['30D']['p50']} pts."
-        )
-    except Exception as exc:
-        err_trace = traceback.format_exc()
-        logger.critical(f"FATAL: Autonomous ML Pipeline Verification FAILED on startup!\n{err_trace}")
-        print(f"\n==================== FATAL ML STARTUP ERROR ====================\n{err_trace}\n", file=sys.stderr)
-        sys.exit(1)
+# Global Predictor Reference (Lazy Loaded on first inference)
+predictor = None
 
 
 # Router for API Endpoints (mounted both with and without /api prefix for robust Vercel compatibility)

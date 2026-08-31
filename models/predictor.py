@@ -2,7 +2,7 @@
 Freight Market Multi-Horizon Quantile Prediction Engine.
 Loads pre-trained Gradient Boosting Quantile Regressors for Baltic Dry Index (BDI)
 forecasting across 7D, 14D, and 30D horizons at P10, P50, and P90 confidence levels.
-Supports live artifact synchronization from Supabase Storage bucket 'model-artifacts'.
+Zero heavy top-level dependencies (Lazy Loaded on demand).
 """
 
 import json
@@ -13,9 +13,6 @@ import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
-import joblib
-import numpy as np
-import pandas as pd
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -45,7 +42,7 @@ STORAGE_BUCKET = "model-artifacts"
 class FreightPredictor:
     """
     Singleton class for loading and executing multi-horizon Baltic Dry Index (BDI)
-    quantile regression forecasts. Supports Supabase Storage artifact downloads.
+    quantile regression forecasts. Supports lazy loading and Supabase Storage artifact downloads.
     """
 
     _instance: Optional["FreightPredictor"] = None
@@ -103,7 +100,7 @@ class FreightPredictor:
 
             return True
         except Exception as e:
-            logger.info(f"Supabase Storage artifact sync note (using local weights): {e}")
+            logger.info(f"Supabase Storage artifact sync note: {e}")
             return False
 
     def _locate_artifact_path(self, filename: str, custom_dir: Optional[Union[str, Path]] = None) -> Path:
@@ -167,8 +164,11 @@ class FreightPredictor:
         """
         Load joblib models, scalers, and metadata with zero-latency local resolution first,
         falling back to cloud storage sync only if local bundle files are missing.
+        Lazy imports joblib inside this method.
         """
         try:
+            import joblib
+
             models_path: Optional[Path] = None
             scalers_path: Optional[Path] = None
             metadata_path: Optional[Path] = None
@@ -221,6 +221,7 @@ class FreightPredictor:
     def compute_derived_features(data: Dict[str, Any]) -> Dict[str, float]:
         """
         Compute derived technical indicators and spreads from input market features.
+        Zero external ML dependencies.
         """
         features = dict(data)
 
@@ -268,9 +269,13 @@ class FreightPredictor:
         """
         Execute multi-horizon quantile predictions for Baltic Dry Index.
         Returns P10, P50, and P90 forecast bands.
+        Lazy loads pandas and numpy inside this method.
         """
         if not self.is_ready:
             raise RuntimeError("FreightPredictor models are not loaded.")
+
+        import numpy as np
+        import pandas as pd
 
         features_dict = self.compute_derived_features(raw_input_data)
         input_vector = [features_dict[col] for col in FEATURE_COLUMNS]
