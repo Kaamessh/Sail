@@ -245,7 +245,8 @@ def save_scenario(payload: SaveScenarioRequest) -> Dict[str, Any]:
 app.include_router(api_router, prefix="/api")
 app.include_router(api_router, prefix="")
 
-# Static Frontend Serving
-frontend_dir = Path(__file__).resolve().parent.parent / "frontend"
-if frontend_dir.exists():
-    app.mount("/", StaticFiles(directory=str(frontend_dir), html=True), name="frontend")
+# Static Frontend Serving (only for local standalone server)
+if not os.getenv("VERCEL") and not os.getenv("AWS_LAMBDA_FUNCTION_NAME"):
+    frontend_dir = Path(__file__).resolve().parent.parent / "frontend"
+    if frontend_dir.exists():
+        app.mount("/", StaticFiles(directory=str(frontend_dir), html=True), name="frontend")

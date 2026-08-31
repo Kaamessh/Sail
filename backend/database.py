@@ -248,24 +248,8 @@ class MaritimeDatabase:
 
     def get_market_history(self, limit: int = 45) -> List[Dict[str, Any]]:
         """
-        Retrieve recent market records.
+        Retrieve recent market records instantly from the loaded feature store.
         """
-        if self._is_connected and self._supabase_client:
-            try:
-                response = (
-                    self._supabase_client.table("market_history")
-                    .select("*")
-                    .order("date", desc=True)
-                    .limit(limit)
-                    .execute()
-                )
-                if response.data and len(response.data) > 0:
-                    return list(reversed(response.data))
-                else:
-                    logger.info("Supabase market_history returned empty data. Falling back to feature store.")
-            except Exception as e:
-                logger.error(f"Supabase market_history query failed: {e}. Falling back to feature store.")
-
         if not self._local_market or len(self._local_market) == 0:
             self._local_market = load_local_feature_store()
 

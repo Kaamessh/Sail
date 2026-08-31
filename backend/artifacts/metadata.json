@@ -1,0 +1,27 @@
+{
+    "feature_columns": [
+        "BDI_Close",
+        "BDI_Open",
+        "BDI_High",
+        "BDI_Low",
+        "Bunker_VLSFO",
+        "Bunker_MGO",
+        "Bunker_IFO380",
+        "Hi5_Spread",
+        "BDI_7D_MA",
+        "BDI_14D_MA",
+        "BDI_30D_Vol"
+    ],
+    "horizons": [
+        7,
+        14,
+        30
+    ],
+    "quantiles": [
+        "p10",
+        "p50",
+        "p90"
+    ],
+    "training_end_date": "2026-08-26",
+    "target_metric": "BDI_Close"
+}
