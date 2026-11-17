@@ -22,7 +22,7 @@
     "p50",
     "p90"
   ],
-  "training_timestamp": "2026-11-16T02:31:42.593986Z",
+  "training_timestamp": "2026-11-17T04:55:43.561217Z",
   "training_records_count": 90,
   "target_metric": "BDI_Close",
   "model_architecture": "GradientBoostingRegressor (Quantile Loss)"
